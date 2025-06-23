@@ -31,7 +31,8 @@ st.markdown("""
 # --- Embedding / LLM ---
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI()
+    return ChatOpenAI(model="gpt-4.1-nano")
+
 
 @st.cache_resource
 def get_embeddings():
@@ -116,10 +117,19 @@ def get_context_retriever_chain(vector_store):
 
 def get_conversational_rag_chain(retriever_chain):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Answer the user's question based on the context:\n\n{context}"),
-        MessagesPlaceholder("chat_history"),
-        ("user", "{input}"),
-    ])
+    ("system", """You are a retail intelligence assistant. Answer based only on the provided context.
+
+If the user asks for a list or tabular breakdown (like "categories and brands"), create a Markdown table with appropriate columns.
+
+Do NOT make up data. If the info is not in context, say clearly: 'The information is not available in the documents I’ve read.'
+
+Context:
+{context}
+"""),
+    MessagesPlaceholder("chat_history"),
+    ("user", "{input}"),
+])
+
     return create_retrieval_chain(retriever_chain, create_stuff_documents_chain(get_llm(), prompt))
 
 def get_response(user_input):
