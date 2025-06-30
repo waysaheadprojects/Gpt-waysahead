@@ -9,7 +9,8 @@ import streamlit as st
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from io import BytesIO
-from fpdf import FPDF
+from reportlab.lib.pagesizes import letter
+from reportlab.pdfgen import canvas
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -227,21 +228,24 @@ async def main():
                     final_report = result_holder['report']
                     yield f"\n\n## ✅ Final Report\n\n{final_report}"
 
-                    # === Generate PDF ===
-                    pdf = FPDF()
-                    pdf.add_page()
-                    pdf.set_auto_page_break(auto=True, margin=15)
-                    pdf.set_font("Arial", size=12)
-                    for line in final_report.split('\n'):
-                        pdf.multi_cell(0, 10, line)
+                    # === Unicode-safe PDF with reportlab ===
+                    pdf_buffer = BytesIO()
+                    c = canvas.Canvas(pdf_buffer, pagesize=letter)
+                    textobject = c.beginText(40, 750)
+                    textobject.setFont("Helvetica", 12)
 
-                    pdf_bytes = BytesIO()
-                    pdf.output(pdf_bytes)
-                    pdf_bytes.seek(0)
+                    for line in final_report.split("\n"):
+                        textobject.textLine(line)
+
+                    c.drawText(textobject)
+                    c.showPage()
+                    c.save()
+
+                    pdf_buffer.seek(0)
 
                     st.download_button(
                         label="📄 Download Report as PDF",
-                        data=pdf_bytes,
+                        data=pdf_buffer,
                         file_name="research_report.pdf",
                         mime="application/pdf"
                     )
