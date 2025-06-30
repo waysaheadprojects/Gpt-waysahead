@@ -122,7 +122,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
             chart_box.line_chart(df, x="Step", y="Score")
 
     researcher = GPTResearcher(
-        query=query,
+        query=topic,
         report_type="research_report",
         report_source="langchain_vectorstore",
         vector_store=vs,
