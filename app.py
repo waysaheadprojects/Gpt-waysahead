@@ -1,5 +1,6 @@
 import os
 import asyncio
+import time
 from dotenv import load_dotenv
 
 import streamlit as st
@@ -55,7 +56,6 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-# ✅ Properly await chain
 async def vector_lookup(query: str) -> str:
     """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
@@ -74,20 +74,23 @@ async def chitchat_tool(query: str) -> str:
 async def run_gpt_researcher(query: str) -> str:
     """Run the GPT Researcher deep report."""
     log_file = "./research_logs.txt"
+    open(log_file, "w").close()
+
     def capture_log(*args, **kwargs):
         with open(log_file, "a") as f:
             f.write(" ".join(str(a) for a in args) + "\n")
+
     researcher = GPTResearcher(
         query=query,
         report_type="research_report",
         report_source="hybrid",
-        vector_store=vs
+        vector_store=vs,
+        doc_path="./uploads"
     )
     researcher.print = capture_log
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# ✅ Now with docstring to fix ValueError
 async def deep_tool_fn(query: str) -> str:
     """Run deep GPT researcher report."""
     return await run_gpt_researcher(query)
@@ -157,7 +160,6 @@ async def main():
 
         with st.spinner("Thinking..."):
             result = await agent.ainvoke(State(query=prompt))
-
             answer = result["answer"]
             if asyncio.iscoroutine(answer):
                 answer = await answer
@@ -172,27 +174,30 @@ async def main():
 
         st.rerun()
 
-    if st.session_state.messages and isinstance(st.session_state.messages[-1]["content"], str) and "Deep Research" in st.session_state.messages[-1]["content"]:
-        if st.button("🔍 Run Deep Research Now"):
-            with st.spinner("Running Deep Research..."):
-                report = await deep_tool.ainvoke({"query": st.session_state.last_query})
-                if asyncio.iscoroutine(report):
-                    report = await report
-                st.session_state.messages.append({"role": "assistant", "content": report})
-                st.rerun()
-
     st.divider()
     with st.expander("💡 Manual Deep Research"):
         manual_q = st.text_input("Your topic:")
         if st.button("Run Manual Research"):
             if manual_q.strip():
-                with st.spinner("Running Deep Research..."):
-                    report = await deep_tool.ainvoke({"query": manual_q})
-                    if asyncio.iscoroutine(report):
-                        report = await report
-                    st.session_state.messages.append({"role": "user", "content": f"Manual topic: {manual_q}"})
-                    st.session_state.messages.append({"role": "assistant", "content": report})
-                    st.rerun()
+                def stream_research():
+                    log_file = "./research_logs.txt"
+                    task = asyncio.run(deep_tool.ainvoke({"query": manual_q}))
+
+                    # While running, stream log file
+                    last_content = ""
+                    while True:
+                        time.sleep(1)
+                        if os.path.exists(log_file):
+                            with open(log_file) as f:
+                                content = f.read()
+                                if content != last_content:
+                                    last_content = content
+                                    yield f"```\n{content}\n```"
+                        if not asyncio.iscoroutine(task):
+                            break
+                    yield f"\n\n## ✅ Final Report:\n\n{task}"
+
+                st.write_stream(stream_research)
             else:
                 st.warning("Please enter a topic.")
 
