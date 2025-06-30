@@ -5,10 +5,9 @@ from urllib.parse import urljoin, urlparse
 import streamlit as st
 from tqdm import tqdm
 from dotenv import load_dotenv
-import hashlib
 
 from langchain_core.messages import AIMessage, HumanMessage
-from langchain_community.document_loaders import WebBaseLoader
+from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
@@ -16,11 +15,9 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
-# --- Load env ---
 load_dotenv()
+st.set_page_config(page_title="Retail Chatbot", page_icon="🧠")
 
-st.set_page_config(page_title="Crawled Brand Chat", page_icon="🏬")
-# --- Hide Sidebar Completely ---
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -28,17 +25,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# --- Embedding / LLM ---
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano")
-
+    return ChatOpenAI(model="gpt-4o")
 
 @st.cache_resource
 def get_embeddings():
     return OpenAIEmbeddings()
 
-# --- Fixed domains to crawl ---
 FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/Mall_of_the_Emirates",
     "https://www.malloftheemirates.com/en",
@@ -46,8 +40,7 @@ FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/BFL_Group",
 ]
 
-# --- Crawl internal links from a domain ---
-def crawl_links(start_url, max_pages=20):
+def crawl_links(start_url, max_pages=10):
     seen = set()
     to_visit = [start_url]
     base_domain = urlparse(start_url).netloc
@@ -69,96 +62,135 @@ def crawl_links(start_url, max_pages=20):
         seen.add(current)
     return list(seen)
 
-
-# --- Vectorstore loader (crawler + embedder) ---
 @st.cache_resource
-def get_vectorstore_from_crawled_domains():
-    cache_path = ".chroma_cache/crawled_fixed"
-    os.makedirs(cache_path, exist_ok=True)
-
-    if os.path.exists(os.path.join(cache_path, "index")):
-        return Chroma(persist_directory=cache_path, embedding_function=get_embeddings())
+def get_base_vectorstore():
+    path = ".chroma_cache/base"
+    os.makedirs(path, exist_ok=True)
+    if os.path.exists(os.path.join(path, "index")):
+        return Chroma(persist_directory=path, embedding_function=get_embeddings())
 
     all_urls = []
-    with st.spinner("🌐 Crawling and indexing all pages..."):
+    with st.spinner("🌐 Crawling sites..."):
         for url in FIXED_DOMAINS:
-            # st.write(f"Crawling: {url}")  # ← REMOVE this line to hide individual link
-            urls = crawl_links(url, max_pages=20)
+            urls = crawl_links(url, max_pages=10)
             all_urls.extend(urls)
 
-        documents = []
+        docs = []
         for url in tqdm(all_urls, desc="Loading pages"):
             try:
                 loader = WebBaseLoader(url)
-                docs = loader.load()
-                for doc in docs:
+                for doc in loader.load():
                     doc.metadata["source_url"] = url
-                documents.extend(docs)
+                    docs.append(doc)
             except Exception:
                 continue
 
-        chunks = RecursiveCharacterTextSplitter().split_documents(documents)
-        vectorstore = Chroma.from_documents(chunks, get_embeddings(), persist_directory=cache_path)
-        vectorstore.persist()
-
+        chunks = RecursiveCharacterTextSplitter().split_documents(docs)
+        vs = Chroma.from_documents(chunks, get_embeddings(), persist_directory=path)
+        vs.persist()
     st.success(f"✅ Indexed {len(all_urls)} pages.")
-    return vectorstore
+    return vs
 
+@st.cache_resource
+def get_pdf_vectorstore():
+    path = ".chroma_cache/pdfs"
+    os.makedirs(path, exist_ok=True)
 
-# --- RAG pipeline ---
-def get_context_retriever_chain(vector_store):
-    retriever = vector_store.as_retriever()
+    # If we already have embedded PDFs, just load them:
+    if os.path.exists(os.path.join(path, "index")):
+        return Chroma(persist_directory=path, embedding_function=get_embeddings())
+
+    # Otherwise, initialize empty store:
+    return Chroma(persist_directory=path, embedding_function=get_embeddings())
+
+def add_pdfs_to_store(uploaded_files, pdf_vs):
+    os.makedirs("./uploads", exist_ok=True)
+    docs = []
+    for file in uploaded_files:
+        save_path = f"./uploads/{file.name}"
+        with open(save_path, "wb") as f:
+            f.write(file.getbuffer())
+        loader = PyPDFLoader(save_path)
+        for doc in loader.load():
+            doc.metadata["source_pdf"] = file.name
+            docs.append(doc)
+    chunks = RecursiveCharacterTextSplitter().split_documents(docs)
+    pdf_vs.add_documents(chunks)
+    pdf_vs.persist()
+    return pdf_vs
+
+def get_merged_vectorstore():
+    base_vs = get_base_vectorstore()
+    pdf_vs = get_pdf_vectorstore()
+    base_vs.merge_from(pdf_vs)
+    return base_vs
+
+def get_retriever_chain(vs):
+    retriever = vs.as_retriever()
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Given the above conversation, generate a search query to get relevant information."),
+        ("user", "Generate best search query."),
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
-def get_conversational_rag_chain(retriever_chain):
+def get_rag_chain(retriever_chain):
     prompt = ChatPromptTemplate.from_messages([
-    ("system", """You are a retail intelligence assistant. Answer based only on the provided context.
-
-If the user asks for a list or tabular breakdown (like "categories and brands"), create a Markdown table with appropriate columns.
-
-Do NOT make up data. If the info is not in context, say clearly: 'The information is not available in the documents I’ve read.'
+        ("system", """
+You are a retail assistant. Use only the context below.
+If the user asks for lists or tables, use clean Markdown.
+If info is missing, say: 'I couldn’t find that in the available information.'
 
 Context:
 {context}
 """),
-    MessagesPlaceholder("chat_history"),
-    ("user", "{input}"),
-])
-
+        MessagesPlaceholder("chat_history"),
+        ("user", "{input}"),
+    ])
     return create_retrieval_chain(retriever_chain, create_stuff_documents_chain(get_llm(), prompt))
 
-def get_response(user_input):
-    retriever_chain = get_context_retriever_chain(st.session_state.vector_store)
-    rag_chain = get_conversational_rag_chain(retriever_chain)
+def get_answer(user_input):
+    retriever_chain = get_retriever_chain(st.session_state.vector_store)
+    rag_chain = get_rag_chain(retriever_chain)
     result = rag_chain.invoke({
         "chat_history": st.session_state.chat_history,
         "input": user_input
     })
     return result["answer"]
 
-# --- UI ---
+# === UI ===
+st.title("🧠 Retail Chatbot — BFL, Mall & Permanent PDFs")
 
-st.title("🧠 Ask Me About BFL & Mall of the Emirates")
+# 1️⃣ Always load merged vector store:
+st.session_state.vector_store = get_merged_vectorstore()
 
-if "vector_store" not in st.session_state:
-    st.session_state.vector_store = get_vectorstore_from_crawled_domains()
+# 2️⃣ Allow PDF upload if new:
+uploaded_files = st.file_uploader(
+    "📄 Upload new PDF(s) — these will be saved permanently:",
+    type=["pdf"], accept_multiple_files=True
+)
 
+if uploaded_files:
+    pdf_vs = get_pdf_vectorstore()
+    add_pdfs_to_store(uploaded_files, pdf_vs)
+    st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
+
+# 3️⃣ Init chat history:
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [AIMessage(content="Hi! Ask me anything about Mall of the Emirates or BFL Group.")]
+    st.session_state.chat_history = [
+        AIMessage(content="Hi 👋! Ask me anything about BFL, Mall, or all uploaded PDFs.")
+    ]
 
-user_query = st.chat_input("Ask your question...")
-if user_query:
-    response = get_response(user_query)
+# 4️⃣ Handle chat:
+user_input = st.chat_input("Type your question here...")
+if user_input:
+    answer = get_answer(user_input)
     st.session_state.chat_history.extend([
-        HumanMessage(content=user_query),
-        AIMessage(content=response)
+        HumanMessage(content=user_input),
+        AIMessage(content=answer)
     ])
 
+# 5️⃣ Show chat:
 for msg in st.session_state.chat_history:
     with st.chat_message("AI" if isinstance(msg, AIMessage) else "Human"):
         st.markdown(msg.content)
