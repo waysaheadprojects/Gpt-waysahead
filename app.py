@@ -1,28 +1,25 @@
 import os
 import re
-import glob
 import asyncio
 import random
-import requests
-import feedparser
-import pandas as pd
-import gpt_researcher.actions.agent_creator as agent_creator
-import streamlit as st
-
+import glob
 from dotenv import load_dotenv
-from tqdm import tqdm
-from bs4 import BeautifulSoup
 
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, AIMessage
 from langchain_openai import OpenAIEmbeddings, ChatOpenAI
 from langchain_community.vectorstores import FAISS
-from langchain_core.messages import AIMessage, HumanMessage
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
+
 from gpt_researcher import GPTResearcher
-import os
-os.environ["REPORT_SOURCE"] = "local"
-# === Patch regex crash ===
+import gpt_researcher.actions.agent_creator as agent_creator
+
+from langgraph.graph import StateGraph, END
+
+# === Safe regex fix ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -30,134 +27,124 @@ def safe_extract_json_with_regex(response):
     return original(response)
 agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 
-# === Env ===
 load_dotenv()
-st.set_page_config(page_title="Hybrid Research — FAISS + Web", page_icon="🧠")
+os.environ["REPORT_SOURCE"] = "local"
 
-st.markdown("""
-<style>
-[data-testid="stSidebar"] { display: none !important; }
-.block-container { padding-top: 2rem; }
-#log-box { height: 300px; overflow-y: scroll; background: #f9f9f9;
- border: 1px solid #ddd; padding: 1rem; font-size: 0.8rem; white-space: pre-wrap; }
-</style>
-""", unsafe_allow_html=True)
+llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.3)
+embeddings = OpenAIEmbeddings()
+vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
 
-@st.cache_resource
-def get_embeddings():
-    return OpenAIEmbeddings()
-
-@st.cache_resource
-def get_vectorstore():
-    embeddings = get_embeddings()
-    vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
-    return vs
-
-@st.cache_resource
-def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.7)
-
-# === Make sure uploads folder exists ===
-UPLOADS_DIR = "./uploads"
-os.makedirs(UPLOADS_DIR, exist_ok=True)
-
-# ✅ Debug: Show files to prove files exist
-st.write("**Uploads folder files:**", glob.glob(f"{UPLOADS_DIR}/**/*", recursive=True))
-
-# If folder is empty, add dummy.txt to guarantee no error
-files = glob.glob(f"{UPLOADS_DIR}/**/*", recursive=True)
-if not files:
-    with open(f"{UPLOADS_DIR}/dummy.txt", "w") as f:
-        f.write("placeholder text")
-
-# === Answer using vector ===
-def get_chunks(q, vs):
-    return vs.similarity_search(q, k=8)
-
-def get_retriever_chain(vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 50})
+# === Common retriever chain ===
+def get_retriever_chain():
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10})
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
         ("user", "Generate a precise search query.")
     ])
-    return create_history_aware_retriever(get_llm(), retriever, prompt)
+    return create_history_aware_retriever(llm, retriever, prompt)
 
 def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", "Use ONLY context below. No hallucination.\nContext: {context}"),
+        ("system", "Use ONLY context below. If none, say '❌ No vector answer.'\nContext: {context}"),
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
     ])
-    return create_retrieval_chain(chain, create_stuff_documents_chain(get_llm(), prompt))
+    return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-def get_answer(q, vs):
-    docs = get_chunks(q, vs)
+# === TOOL 1: Vector Store
+@tool
+async def vector_lookup_tool(query: str) -> str:
+    """
+    Attempt to answer a user question using the local FAISS vector store.
+    Returns relevant context snippets or a 'No vector answer' signal.
+    This tool should be used for any normal lookup: general Q&A, fact-check, simple facts.
+    """
+    docs = vs.similarity_search(query, k=5)
     if not docs:
-        return "❌ No data found."
-    merged_context = "\n\n".join([d.page_content for d in docs])
-    chain = get_retriever_chain(vs)
-    rag = get_rag_chain(chain)
-    result = rag.invoke({
-        "chat_history": st.session_state.chat_history,
-        "input": q,
-        "context": merged_context
-    })
-    return result["answer"]
+        return "❌ No vector answer."
+    context = "\n\n".join([d.page_content for d in docs])
+    return f"✅ Vector answer:\n\n{context[:800]}..."
 
-# === Hybrid Research ===
-async def run_gpt_researcher_hybrid(topic, vs):
-    log_box = st.empty()
-    chart_box = st.empty()
-    logs, metrics = [], []
+# === TOOL 2: Deep Research (fallback)
+@tool
+async def deep_research_tool(query: str) -> str:
+    """
+    Run a full deep hybrid research workflow using GPTResearcher.
+    Combines the FAISS vector store and online web search to create a detailed report.
+    Use this ONLY if the vector store has no good match AND user approves deeper research.
+    """
+    log_file = "./research_logs.txt"
 
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
-        logs.append(line)
-        if "Insight:" in line:
-            metrics.append({"Step": len(metrics)+1, "Score": random.randint(1, 10)})
-        log_box.markdown(f"<div id='log-box'>{''.join(logs[-50:])}</div>", unsafe_allow_html=True)
-        if metrics:
-            df = pd.DataFrame(metrics)
-            chart_box.line_chart(df, x="Step", y="Score")
+        with open(log_file, "a") as f:
+            f.write(line + "\n")
 
     researcher = GPTResearcher(
-        query=topic,
+        query=query,
         report_type="research_report",
-        report_source="langchain_vectorstore",
+        report_source="hybrid",
         vector_store=vs,
+        doc_path="./uploads"
     )
     researcher.print = capture_log
-
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# === UI ===
-vs = get_vectorstore()
-st.title("🧠 Retail Hybrid Research — FAISS + Web")
+# === LangGraph: Define states ===
+class ResearchState:
+    query: str
+    vector_result: str
+    approved_deep: bool
 
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [AIMessage(content="💡 Ready. Ask me or run deep research.")]
+# === Build the Graph ===
+graph = StateGraph(ResearchState)
 
-q = st.chat_input("Quick question?")
-if q:
-    a = get_answer(q, vs)
-    st.session_state.chat_history.extend([HumanMessage(content=q), AIMessage(content=a)])
+# Node 1: Vector lookup
+async def node_vector(state):
+    query = state["query"]
+    result = await vector_lookup_tool.ainvoke({"query": query})
+    return {"vector_result": result}
 
-for msg in st.session_state.chat_history:
-    with st.chat_message("AI" if isinstance(msg, AIMessage) else "Human"):
-        st.markdown(msg.content)
+# Node 2: Branch check
+def branch_check(state):
+    if state["vector_result"].startswith("✅"):
+        return "end"
+    return "ask_user"
 
-# === Hybrid Research Block ===
-st.divider()
-st.header("🔍 Deep Research — FAISS + Web")
-topic = st.text_input("Topic for Deep Research:")
+# Node 3: Ask user whether to proceed with deep research
+async def ask_user_node(state):
+    print("\n🤖 The vector store didn’t find a clear match.")
+    print("This question might benefit from deeper research.")
+    approved = input("Run Deep Research? [yes/no]: ").strip().lower() == "yes"
+    return {"approved_deep": approved}
 
-if st.button("🚀 Run Hybrid Research Now"):
-    if not topic.strip():
-        st.warning("❗ Please enter a topic.")
-    else:
-        with st.spinner("⏳ Running hybrid research..."):
-            report = asyncio.run(run_gpt_researcher_hybrid(topic, vs))
-            st.download_button("📄 Download Report", report, file_name="DeepResearchReport.md")
-            st.write(report)
+# Node 4: If approved, run GPTResearcher
+async def run_deep_node(state):
+    query = state["query"]
+    result = await deep_research_tool.ainvoke({"query": query})
+    return {"vector_result": result}
+
+# === Add nodes & edges ===
+graph.add_node("vector_lookup", node_vector)
+graph.add_node("ask_user", ask_user_node)
+graph.add_node("deep_research", run_deep_node)
+
+graph.set_entry_point("vector_lookup")
+graph.add_edge("vector_lookup", branch_check)
+graph.add_conditional_edges("vector_lookup", branch_check, {
+    "end": END,
+    "ask_user": "ask_user"
+})
+graph.add_edge("ask_user", "deep_research")
+graph.add_edge("deep_research", END)
+
+agent = graph.compile()
+
+# === Run CLI ===
+if __name__ == "__main__":
+    query = input("Ask your question: ")
+    result = asyncio.run(agent.invoke({"query": query}))
+    print("\n=== Final Answer ===")
+    print(result["vector_result"])
