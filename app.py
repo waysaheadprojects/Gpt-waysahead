@@ -15,7 +15,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# === PATCH for JSON bug ===
+# === PATCH ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -23,11 +23,9 @@ def safe_extract_json_with_regex(response):
     return original(response)
 agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 
-# === Load env ===
 load_dotenv()
 os.environ["REPORT_SOURCE"] = "local"
 
-# === Setup ===
 llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.3)
 embeddings = OpenAIEmbeddings()
 vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
@@ -36,10 +34,9 @@ def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system",
          """
-You are a trusted retail & consumer research assistant.
-Use ONLY the given context. If missing, say ❌.
-Never hallucinate.
-Use clear markdown tables, bullet points, short chart ideas if helpful.
+You are a trusted retail research assistant.
+Use ONLY the context. If missing, say ❌.
+Use markdown tables, bullet points, chart suggestions.
 Context: {context}
          """),
         MessagesPlaceholder("chat_history"),
@@ -52,13 +49,13 @@ def get_retriever_chain():
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Generate a precise search query.")
+        ("user", "Generate precise search query.")
     ])
     return create_history_aware_retriever(llm, retriever, prompt)
 
 @tool
 async def vector_lookup_tool(query: str) -> str:
-    """Answer using vector store. ❌ if no match."""
+    """Try FAISS vector. ❌ if not found."""
     docs = vs.similarity_search(query, k=5)
     if not docs:
         return "❌ No vector answer."
@@ -73,13 +70,12 @@ async def vector_lookup_tool(query: str) -> str:
 
 @tool
 async def deep_research_tool(query: str) -> str:
-    """Run GPTResearcher hybrid + log output."""
+    """Run GPTResearcher hybrid."""
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
         with open(log_file, "a") as f:
             f.write(line + "\n")
-
     researcher = GPTResearcher(
         query=query,
         report_type="research_report",
@@ -91,8 +87,8 @@ async def deep_research_tool(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# === Streamlit UI ===
-st.set_page_config(page_title="Retail Research Chatbot", page_icon="🧠")
+# === Streamlit ===
+st.set_page_config(page_title="Retail Hybrid Chatbot", page_icon="🧠")
 st.title("🧠 Retail Research — Hybrid Chatbot")
 
 if "messages" not in st.session_state:
@@ -100,12 +96,12 @@ if "messages" not in st.session_state:
 if "last_query" not in st.session_state:
     st.session_state.last_query = ""
 
-# Display chat history
+# Show chat history
 for msg in st.session_state.messages:
     with st.chat_message("user" if msg["role"] == "user" else "assistant"):
         st.markdown(msg["content"])
 
-# New chat input
+# Input bar
 if prompt := st.chat_input("Ask me anything..."):
     st.session_state.messages.append({"role": "user", "content": prompt})
     st.session_state.last_query = prompt
@@ -113,35 +109,34 @@ if prompt := st.chat_input("Ask me anything..."):
     with st.chat_message("user"):
         st.markdown(prompt)
 
-    with st.spinner("Checking local knowledge..."):
+    with st.spinner("Looking for a quick answer..."):
         answer = asyncio.run(vector_lookup_tool(prompt))
 
     if answer.startswith("❌"):
         st.session_state.messages.append({"role": "assistant",
-                                          "content": "I couldn’t find this in my local data. Want to run Deep Research instead?"})
+                                          "content": "I couldn’t find this in local data. Click below if you’d like Deep Research!"})
     else:
         st.session_state.messages.append({"role": "assistant", "content": answer})
 
     st.rerun()
 
-# If last message was fallback → offer fallback button
+# Fallback Deep Research button if needed
 if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
-    if st.button("🔍 Run Deep Research Now"):
+    if st.button("🔍 Run Deep Research for this"):
         with st.spinner("Running Deep Research..."):
             deep_report = asyncio.run(deep_research_tool(st.session_state.last_query))
             st.session_state.messages.append({"role": "assistant", "content": deep_report})
             st.rerun()
 
-# === EXTRA: Manual Deep Research anytime ===
-st.divider()
-st.subheader("💡 Run Manual Deep Research")
-manual_topic = st.text_input("Deep Research topic:")
-if st.button("Run Deep Research Manually"):
-    if manual_topic.strip():
-        with st.spinner("Running Deep Research..."):
-            manual_report = asyncio.run(deep_research_tool(manual_topic))
-            st.session_state.messages.append({"role": "user", "content": f"Run Deep Research for: {manual_topic}"})
-            st.session_state.messages.append({"role": "assistant", "content": manual_report})
-            st.rerun()
-    else:
-        st.warning("Please enter a topic first.")
+# 📌 Subtle manual Deep Research block BELOW input, NOT above
+with st.expander("💡 Want to run manual Deep Research anytime?"):
+    manual_topic = st.text_input("Enter any custom research topic here:")
+    if st.button("Run Deep Research Manually"):
+        if manual_topic.strip():
+            with st.spinner("Running Deep Research..."):
+                manual_report = asyncio.run(deep_research_tool(manual_topic))
+                st.session_state.messages.append({"role": "user", "content": f"Run Deep Research for: {manual_topic}"})
+                st.session_state.messages.append({"role": "assistant", "content": manual_report})
+                st.rerun()
+        else:
+            st.warning("Please enter a topic.")
