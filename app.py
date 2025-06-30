@@ -112,7 +112,7 @@ def get_best_welcome_fact(vs):
     return f"💡 {random.choice(WELCOME_FACTS)}"
 
 # === Crawl helper ===
-def crawl_links(start_url, max_pages=10):
+def crawl_links(start_url, max_pages=100):
     seen = set()
     to_visit = [start_url]
     base_domain = urlparse(start_url).netloc
@@ -156,7 +156,7 @@ def get_or_create_vectorstore():
     all_urls = []
     with st.spinner("🌐 Crawling sites..."):
         for url in FIXED_DOMAINS:
-            urls = crawl_links(url, max_pages=10)
+            urls = crawl_links(url, max_pages=100)
             all_urls.extend(urls)
 
         with open(".chroma_cache/urls.txt", "w") as f:
@@ -228,7 +228,7 @@ def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
 def get_best_relevant_chunks(query, vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10)
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10))
     docs = retriever.get_relevant_documents(query)
     if not docs:
         all_docs = vs.get()["documents"]
