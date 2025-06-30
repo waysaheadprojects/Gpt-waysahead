@@ -16,9 +16,6 @@ from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# Import web.run tool (compliance with policy, but unused)
-from langchain.tools import web
-
 # === Patch for JSON regex bug ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
