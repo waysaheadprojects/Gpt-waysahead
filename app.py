@@ -20,7 +20,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 from gpt_researcher import GPTResearcher
-
+import os
+os.environ["REPORT_SOURCE"] = "local"
 # === Patch regex crash ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
@@ -125,7 +126,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
         report_type="research_report",
         report_source="hybrid",
         vector_store=vs,
-        doc_path=UPLOADS_DIR  # ✅ use real uploads dir
+        doc_path=./uploads  # ✅ use real uploads dir
     )
     researcher.print = capture_log
 
