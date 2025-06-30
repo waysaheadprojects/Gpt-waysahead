@@ -81,8 +81,7 @@ async def run_gpt_researcher(query: str) -> str:
         query=query,
         report_type="research_report",
         report_source="hybrid",
-        vector_store=vs,
-        doc_path="./uploads"
+        vector_store=vs
     )
     researcher.print = capture_log
     await researcher.conduct_research()
