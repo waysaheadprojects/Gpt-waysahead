@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# === PATCH for regex bug in GPTResearcher ===
+# === PATCH JSON extraction bug for GPTResearcher ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -28,12 +28,12 @@ agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 load_dotenv()
 os.environ["REPORT_SOURCE"] = "local"
 
-# === Base LLM and Vector Store ===
+# === LLM + Vector ===
 llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.2)
 embeddings = OpenAIEmbeddings()
 vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
 
-# === RAG helper chains ===
+# === RAG ===
 def get_retriever_chain():
     retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
     prompt = ChatPromptTemplate.from_messages([
@@ -47,8 +47,8 @@ def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """
 You are a retail research assistant.
-Use ONLY the context provided. If no match, say ❌.
-Provide markdown, bullet points, or tables if helpful.
+Use ONLY the provided context. If none, say ❌.
+Use markdown, bullet points, tables if helpful.
 Context: {context}
         """),
         MessagesPlaceholder("chat_history"),
@@ -56,34 +56,31 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-# === Tools ===
+# === TOOLS ===
 async def vector_lookup(query: str) -> str:
     """
-    Search the local FAISS vector store for context.
-    Return an answer or ❌ if no relevant match.
+    Look up the query in the local FAISS vector store.
+    Returns a clear answer or ❌ if nothing relevant found.
     """
     docs = vs.similarity_search(query, k=5)
     if not docs:
-        return "❌ No vector answer."
+        return "❌ No vector match."
     context = "\n\n".join([d.page_content for d in docs])
-    result = get_rag_chain(get_retriever_chain()).invoke({
-        "chat_history": [],
-        "input": query,
-        "context": context
-    })
+    chain = get_rag_chain(get_retriever_chain())
+    result = await chain.ainvoke({"chat_history": [], "input": query, "context": context})
     return result["answer"]
 
 async def chitchat_tool(query: str) -> str:
     """
-    Reply warmly to greetings or meta questions.
+    Short, warm replies for greetings or meta queries.
     """
-    prompt = f'User said: "{query}". Reply kindly in 1–2 short lines.'
+    prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
 async def run_gpt_researcher(query: str) -> str:
     """
-    Execute a hybrid deep research with GPTResearcher.
-    Logs progress to research_logs.txt.
+    Execute deep hybrid research with GPTResearcher.
+    Logs to research_logs.txt.
     """
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
@@ -101,28 +98,27 @@ async def run_gpt_researcher(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# === Wrap as LangGraph Tools ===
+# === Wrap as StructuredTool ===
 vector_tool = StructuredTool.from_function(vector_lookup)
 chitchat = StructuredTool.from_function(chitchat_tool)
 deep_tool = StructuredTool.from_function(run_gpt_researcher)
 
-# === LangGraph State & Routing ===
+# === LangGraph State ===
 class State(BaseModel):
     query: str
     route: Optional[str] = None
     answer: Optional[str] = None
 
+# === Router & Nodes ===
 async def router(state: State):
     """
-    Classify whether input is vector lookup or chitchat.
+    Use the LLM to classify the query.
+    Return 'vector' or 'chitchat'.
     """
-    prompt = f'''
-Classify this: "{state.query}"
-If research: vector
-If greeting or small talk: chitchat
-Respond with one word.
-'''
-    res = await llm.ainvoke(prompt)
+    res = await llm.ainvoke(f'''
+Classify: "{state.query}"
+Respond with only one: vector or chitchat.
+''')
     return {"route": res.content.strip().lower()}
 
 async def vector_node(state: State):
@@ -152,7 +148,7 @@ graph.add_edge("deep", END)
 
 agent = graph.compile()
 
-# === Streamlit App ===
+# === Streamlit ===
 st.set_page_config(page_title="Retail Hybrid Agent", page_icon="🧠")
 st.title("🧠 Retail Research — Hybrid LangGraph Agent (No Web Search)")
 
@@ -161,7 +157,7 @@ if "messages" not in st.session_state:
 if "last_query" not in st.session_state:
     st.session_state.last_query = ""
 
-# Show chat history
+# History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
@@ -184,7 +180,7 @@ if prompt := st.chat_input("Ask anything..."):
         st.session_state.messages.append({"role": "assistant", "content": answer})
     st.rerun()
 
-# Fallback deep research
+# Fallback deep
 if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
     if st.button("🔍 Run Deep Research Now"):
         with st.spinner("Running Deep Research..."):
@@ -192,7 +188,7 @@ if st.session_state.messages and "Deep Research" in st.session_state.messages[-1
             st.session_state.messages.append({"role": "assistant", "content": report})
             st.rerun()
 
-# Manual deep research
+# Manual deep
 st.divider()
 with st.expander("💡 Manual Deep Research"):
     manual_q = st.text_input("Your topic:")
