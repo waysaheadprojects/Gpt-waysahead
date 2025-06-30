@@ -31,7 +31,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.9)  # or your model of choice
+    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.9)  
 
 @st.cache_resource
 def get_embeddings():
@@ -44,7 +44,7 @@ FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/BFL_Group",
 ]
 
-# === 1️⃣ RSS HEADLINE ===
+# === RSS HEADLINE ===
 def get_fact_from_rss():
     try:
         feed = feedparser.parse("https://www.retaildive.com/rss/")
@@ -55,7 +55,7 @@ def get_fact_from_rss():
         print(f"RSS failed: {e}")
     return None
 
-# === 2️⃣ DuckDuckGo fallback ===
+# === DuckDuckGo fallback ===
 def get_duckduckgo_fact():
     try:
         query = "latest retail news"
@@ -71,7 +71,7 @@ def get_duckduckgo_fact():
         print(f"DDG failed: {e}")
     return None
 
-# === 3️⃣ Static fallback ===
+# === Static fallback ===
 WELCOME_FACTS = [
     "Mall of the Emirates attracts 42 million visitors every year.",
     "BFL Group runs over 74 stores across the Middle East & Europe.",
@@ -80,10 +80,10 @@ WELCOME_FACTS = [
     "Brands For Less recently expanded its online footprint in India."
 ]
 
-# === 4️⃣ Vector store + LLM tiny summarizer ===
+# === Vector store + LLM tiny summarizer ===
 def get_fact_from_vectorstore(vs):
     try:
-        retriever = vs.as_retriever()
+        retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 6})
         docs = retriever.get_relevant_documents("Share one interesting fact about BFL or Mall of the Emirates.")
         chunks = [d.page_content.strip() for d in docs if len(d.page_content.strip()) > 50]
         if not chunks:
@@ -157,7 +157,11 @@ def get_or_create_vectorstore():
             except Exception:
                 continue
 
-        chunks = RecursiveCharacterTextSplitter().split_documents(docs)
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=300,
+            chunk_overlap=50
+        )
+        chunks = splitter.split_documents(docs)
         vs = Chroma.from_documents(chunks, get_embeddings(), persist_directory=path)
         vs.persist()
     st.success(f"✅ Indexed {len(all_urls)} pages.")
@@ -172,9 +176,21 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
             f.write(file.getbuffer())
         loader = PyPDFLoader(save_path)
         for doc in loader.load():
+            lines = doc.page_content.splitlines()
+            heading = None
+            for line in lines:
+                if line.strip() and line.strip().isupper():
+                    heading = line.strip()
+                    break
+            if heading:
+                doc.metadata["heading"] = heading
             doc.metadata["source_pdf"] = file.name
             docs.append(doc)
-    chunks = RecursiveCharacterTextSplitter().split_documents(docs)
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=300,
+        chunk_overlap=50
+    )
+    chunks = splitter.split_documents(docs)
     vs.add_documents(chunks)
     vs.persist()
     return vs
@@ -182,12 +198,28 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
 def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
+# === Best retriever with keyword fallback ===
+def get_best_relevant_chunks(query, vs):
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+    docs = retriever.get_relevant_documents(query)
+    if not docs:
+        # fallback: direct keyword match
+        all_docs = vs.get()["documents"]
+        keyword_hits = [d for d in all_docs if query.lower() in d["page_content"].lower()]
+        if keyword_hits:
+            print("Using fallback keyword match.")
+            return keyword_hits
+    return docs
+
 def get_retriever_chain(vs):
-    retriever = vs.as_retriever()
+    class CustomRetriever:
+        def get_relevant_documents(self, query):
+            return get_best_relevant_chunks(query, vs)
+    retriever = CustomRetriever()
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Generate a smart search query to retrieve the best answer.")
+        ("user", "Generate the best search query to find the right chunk.")
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
