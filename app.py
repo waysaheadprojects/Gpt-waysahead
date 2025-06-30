@@ -1,12 +1,13 @@
 import os
 import asyncio
 import time
+import threading
 import nest_asyncio
 from dotenv import load_dotenv
 
 import streamlit as st
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -19,7 +20,7 @@ from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# === Allow nested event loops ===
+# === Allow nested loops ===
 nest_asyncio.apply()
 
 # === PATCH ===
@@ -60,6 +61,7 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
+
 async def vector_lookup(query: str) -> str:
     """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
@@ -75,32 +77,36 @@ async def chitchat_tool(query: str) -> str:
     prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
-async def run_gpt_researcher(query: str) -> str:
-    """Run the GPT Researcher deep report."""
-    log_file = "./research_logs.txt"
-    open(log_file, "w").close()
+# === NEW: Custom logs handler ===
+class CustomLogsHandler:
+    """Collect logs as JSON dicts for live streaming."""
+    def __init__(self):
+        self.logs: List[Dict[str, Any]] = []
 
-    def capture_log(*args, **kwargs):
-        with open(log_file, "a") as f:
-            f.write(" ".join(str(a) for a in args) + "\n")
+    async def send_json(self, data: Dict[str, Any]) -> None:
+        self.logs.append(data)
 
+
+async def run_gpt_researcher(query: str, logs_handler: CustomLogsHandler) -> str:
+    """Run the GPT Researcher with custom logs handler."""
     researcher = GPTResearcher(
         query=query,
         report_type="research_report",
         report_source="hybrid",
-        vector_store=vs
+        vector_store=vs,
+        websocket=logs_handler  # << use our handler instead of file
     )
-    researcher.print = capture_log
     await researcher.conduct_research()
     return await researcher.write_report()
 
-def run_gpt_researcher_sync(query: str) -> str:
-    """Sync wrapper for GPT Researcher to avoid asyncio.run conflict."""
-    return asyncio.get_event_loop().run_until_complete(run_gpt_researcher(query))
+def run_gpt_researcher_sync(query: str, logs_handler: CustomLogsHandler) -> str:
+    """Sync version for threading."""
+    return asyncio.get_event_loop().run_until_complete(run_gpt_researcher(query, logs_handler))
 
 async def deep_tool_fn(query: str) -> str:
-    """Run deep GPT researcher report."""
-    return await run_gpt_researcher(query)
+    """For LangGraph compatibility."""
+    handler = CustomLogsHandler()
+    return await run_gpt_researcher(query, handler)
 
 vector_tool = StructuredTool.from_function(vector_lookup)
 chitchat = StructuredTool.from_function(chitchat_tool)
@@ -187,34 +193,24 @@ async def main():
         if st.button("Run Manual Research"):
             if manual_q.strip():
                 def stream_research():
-                    log_file = "./research_logs.txt"
-                    report_ready = False
-
-                    # Kick off sync version to keep event loop safe
-                    def run_research():
-                        return run_gpt_researcher_sync(manual_q)
-
-                    # Run research in parallel while streaming logs
-                    import threading
-
+                    logs_handler = CustomLogsHandler()
                     result_holder = {"report": ""}
+
                     def run_and_store():
-                        result_holder["report"] = run_research()
+                        result_holder["report"] = run_gpt_researcher_sync(manual_q, logs_handler)
 
                     t = threading.Thread(target=run_and_store)
                     t.start()
 
-                    last_content = ""
+                    last_index = 0
                     while t.is_alive():
                         time.sleep(1)
-                        if os.path.exists(log_file):
-                            with open(log_file) as f:
-                                content = f.read()
-                                if content != last_content:
-                                    last_content = content
-                                    yield f"```\n{content}\n```"
+                        new_logs = logs_handler.logs[last_index:]
+                        if new_logs:
+                            for log in new_logs:
+                                yield f"```json\n{log}\n```"
+                            last_index += len(new_logs)
 
-                    # Final push
                     yield f"\n\n## ✅ Final Report:\n\n{result_holder['report']}"
 
                 st.write_stream(stream_research)
