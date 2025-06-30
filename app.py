@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# PATCH
+# === PATCH ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -25,6 +25,7 @@ def safe_extract_json_with_regex(response):
     return original(response)
 agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 
+# === Load ===
 load_dotenv()
 os.environ["REPORT_SOURCE"] = "local"
 
@@ -54,7 +55,7 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-# ✅ FIX: Properly await the chain here!
+# ✅ Properly await chain
 async def vector_lookup(query: str) -> str:
     """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
@@ -65,13 +66,11 @@ async def vector_lookup(query: str) -> str:
     result = await chain.ainvoke({"chat_history": [], "input": query, "context": context})
     return result["answer"]
 
-# ✅ Already correct — ensures LLM call is awaited
 async def chitchat_tool(query: str) -> str:
     """Chitchat reply."""
     prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
-# ✅ Ensure full await for researcher output
 async def run_gpt_researcher(query: str) -> str:
     """Deep research fallback."""
     log_file = "./research_logs.txt"
@@ -89,9 +88,13 @@ async def run_gpt_researcher(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
+# ✅ Correct: wrap deep_tool in a clean async function to ensure no coroutine leaks
+async def deep_tool_fn(query: str) -> str:
+    return await run_gpt_researcher(query)
+
 vector_tool = StructuredTool.from_function(vector_lookup)
 chitchat = StructuredTool.from_function(chitchat_tool)
-deep_tool = StructuredTool.from_function(run_gpt_researcher)
+deep_tool = StructuredTool.from_function(deep_tool_fn)
 
 class State(BaseModel):
     query: str
@@ -155,7 +158,6 @@ async def main():
         with st.spinner("Thinking..."):
             result = await agent.ainvoke(State(query=prompt))
 
-            # ✅ SAFELY get the answer
             answer = result["answer"]
             if asyncio.iscoroutine(answer):
                 answer = await answer
@@ -170,10 +172,12 @@ async def main():
 
         st.rerun()
 
-    if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
+    if st.session_state.messages and isinstance(st.session_state.messages[-1]["content"], str) and "Deep Research" in st.session_state.messages[-1]["content"]:
         if st.button("🔍 Run Deep Research Now"):
             with st.spinner("Running Deep Research..."):
                 report = await deep_tool.ainvoke({"query": st.session_state.last_query})
+                if asyncio.iscoroutine(report):
+                    report = await report
                 st.session_state.messages.append({"role": "assistant", "content": report})
                 st.rerun()
 
@@ -184,6 +188,8 @@ async def main():
             if manual_q.strip():
                 with st.spinner("Running Deep Research..."):
                     report = await deep_tool.ainvoke({"query": manual_q})
+                    if asyncio.iscoroutine(report):
+                        report = await report
                     st.session_state.messages.append({"role": "user", "content": f"Manual topic: {manual_q}"})
                     st.session_state.messages.append({"role": "assistant", "content": report})
                     st.rerun()
