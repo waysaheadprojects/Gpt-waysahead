@@ -58,14 +58,12 @@ def get_fact_from_rss():
 
 def get_duckduckgo_fact():
     try:
-        query = "latest retail news"
-        url = f"https://duckduckgo.com/html/?q={query}"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        r = requests.get(url, headers=headers, timeout=5)
+        url = "https://duckduckgo.com/html/?q=latest+retail+news"
+        r = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
         soup = BeautifulSoup(r.text, "html.parser")
-        links = soup.find_all("a", {"class": "result__a"})
-        if links:
-            return f"📰 Retail Insight: {links[0].text.strip()}"
+        link = soup.find("a", {"class": "result__a"})
+        if link:
+            return f"📰 Retail Insight: {link.text.strip()}"
     except:
         return None
 
@@ -79,7 +77,7 @@ WELCOME_FACTS = [
 
 def get_fact_from_vectorstore(vs):
     try:
-        docs = vs.similarity_search("Share one interesting fact about BFL or Mall of the Emirates.", k=5)
+        docs = vs.similarity_search("Share one interesting fact about Retail and share just the fact , it should be intutive , ineterseting and enaging", k=5)
         chunks = [d.page_content.strip() for d in docs if len(d.page_content.strip()) > 50]
         if not chunks:
             return None
@@ -94,7 +92,7 @@ def get_fact_from_vectorstore(vs):
 def get_best_welcome_fact(vs):
     return get_fact_from_vectorstore(vs) or get_fact_from_rss() or get_duckduckgo_fact() or f"💡 {random.choice(WELCOME_FACTS)}"
 
-def crawl_links(start_url, max_pages=10):
+def crawl_links(start_url, max_pages=5):
     seen, to_visit = set(), [start_url]
     base_domain = urlparse(start_url).netloc
     while to_visit and len(seen) < max_pages:
@@ -123,13 +121,13 @@ def get_or_create_vectorstore():
             except: st.session_state.pdf_pages_indexed = 0
         return FAISS.load_local(path, embeddings)
 
-    all_urls = []
+    all_urls, docs = [], []
     for url in FIXED_DOMAINS:
         all_urls.extend(crawl_links(url, max_pages=5))
-    docs = []
     for url in tqdm(all_urls):
         try: docs.extend(WebBaseLoader(url).load())
         except: pass
+
     splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
     vs = FAISS.from_documents(chunks, embeddings)
@@ -138,10 +136,12 @@ def get_or_create_vectorstore():
     with open(".faiss_urls.txt", "w") as f: f.write(str(len(all_urls)))
     st.session_state.web_pages_indexed = len(all_urls)
     st.session_state.pdf_pages_indexed = 0
+
     st.success(f"✅ Indexed {len(all_urls)} website pages.")
     return vs
 
 def add_pdfs_to_vectorstore(uploaded_files, vs):
+    os.makedirs("./uploads", exist_ok=True)
     pdf_docs, page_count = [], 0
     for file in uploaded_files:
         save_path = f"./uploads/{file.name}"
@@ -153,13 +153,15 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
             if heading: doc.metadata["heading"] = heading
             doc.metadata["source_pdf"] = file.name
             pdf_docs.append(doc)
-    chunks = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50).split_documents(pdf_docs)
+
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    chunks = splitter.split_documents(pdf_docs)
     vs.add_documents(chunks)
     vs.save_local("./faiss_index")
 
     st.session_state.pdf_pages_indexed = st.session_state.get("pdf_pages_indexed", 0) + page_count
     with open(".faiss_pdfs.txt", "w") as f: f.write(str(st.session_state.pdf_pages_indexed))
-    st.success(f"✅ Added {len(uploaded_files)} PDF(s) with {page_count} pages! Reload page to use them.")
+    st.success(f"✅ Added {len(uploaded_files)} PDF(s) with {page_count} pages!")
     return vs
 
 def get_best_relevant_chunks(query, vs):
@@ -178,7 +180,7 @@ def get_retriever_chain(vs):
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
-def get_rag_chain(chain): 
+def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a warm, engaging retail assistant.
 Use only the context below. No hallucination.
@@ -203,14 +205,23 @@ def get_answer(user_input):
 st.title("🧠 Retail Chatbot — FAISS Version")
 st.session_state.vector_store = get_or_create_vectorstore()
 
-if not glob.glob("./uploads/*.pdf"):
-    files = st.file_uploader("📄 Upload PDF(s)", type=["pdf"], accept_multiple_files=True)
-    if files: add_pdfs_to_vectorstore(files, st.session_state.vector_store)
+uploaded_files = st.file_uploader(
+    "📄 Upload PDF(s) — permanently stored",
+    type=["pdf"], accept_multiple_files=True
+)
 
-st.info(f"📊 Indexed — Websites: {st.session_state.get('web_pages_indexed',0)} | PDFs: {st.session_state.get('pdf_pages_indexed',0)} pages")
+# ✅ Upload logic runs ONLY if files are freshly uploaded!
+if uploaded_files and len(uploaded_files) > 0:
+    add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
+
+st.info(
+    f"📊 Total indexed — Websites: {st.session_state.get('web_pages_indexed',0)} | PDFs: {st.session_state.get('pdf_pages_indexed',0)} pages"
+)
 
 if "chat_history" not in st.session_state:
-    st.session_state.chat_history = [AIMessage(content=get_best_welcome_fact(st.session_state.vector_store))]
+    st.session_state.chat_history = [
+        AIMessage(content=get_best_welcome_fact(st.session_state.vector_store))
+    ]
 
 q = st.chat_input("Ask me anything…")
 if q:
