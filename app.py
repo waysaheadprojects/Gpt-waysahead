@@ -8,7 +8,8 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from gpt_researcher import GPTResearcher
-
+from dotenv import load_dotenv
+load_dotenv()
 # === Streamlit settings ===
 st.set_page_config(page_title="Retail Research + Dynamic Charts", page_icon="📊")
 
