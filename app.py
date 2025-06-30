@@ -140,13 +140,27 @@ def get_or_create_vectorstore():
     os.makedirs(path, exist_ok=True)
 
     if os.path.exists(os.path.join(path, "index")):
+        # 🟢 Restore web count from file
+        if "web_pages_indexed" not in st.session_state:
+            try:
+                with open(".chroma_cache/urls.txt", "r") as f:
+                    urls = f.read().splitlines()
+                    st.session_state.web_pages_indexed = len(urls)
+            except:
+                st.session_state.web_pages_indexed = 0
+        if "pdf_pages_indexed" not in st.session_state:
+            st.session_state.pdf_pages_indexed = 0
         return Chroma(persist_directory=path, embedding_function=get_embeddings())
 
+    # fresh crawl
     all_urls = []
     with st.spinner("🌐 Crawling sites..."):
         for url in FIXED_DOMAINS:
             urls = crawl_links(url, max_pages=10)
             all_urls.extend(urls)
+
+        with open(".chroma_cache/urls.txt", "w") as f:
+            f.write("\n".join(all_urls))
 
         docs = []
         for url in tqdm(all_urls, desc="Loading pages"):
@@ -167,10 +181,11 @@ def get_or_create_vectorstore():
         vs.persist()
 
     st.session_state.web_pages_indexed = len(all_urls)
-    st.session_state.pdf_pages_indexed = 0  # start with zero PDFs
+    st.session_state.pdf_pages_indexed = 0
 
     st.success(f"✅ Indexed {len(all_urls)} website pages.")
     return vs
+
 
 def add_pdfs_to_vectorstore(uploaded_files, vs):
     os.makedirs("./uploads", exist_ok=True)
@@ -213,11 +228,15 @@ def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
 def get_best_relevant_chunks(query, vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10)
     docs = retriever.get_relevant_documents(query)
     if not docs:
         all_docs = vs.get()["documents"]
-        keyword_hits = [d for d in all_docs if query.lower() in d["page_content"].lower()]
+        keyword_hits = []
+        for d in all_docs:
+            text = d["page_content"].lower().strip()
+            if query.lower().strip() in text:
+                keyword_hits.append(d)
         if keyword_hits:
             print("✅ Using fallback keyword match.")
             return keyword_hits
@@ -285,7 +304,10 @@ if not pdfs_already_uploaded():
         add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
 
 # ✅ Show index summary
-st.info(f"📊 Total indexed — Websites: {st.session_state.get('web_pages_indexed', 0)} pages | PDFs: {st.session_state.get('pdf_pages_indexed', 0)} pages")
+st.info(
+    f"📊 Total indexed — Websites: {st.session_state.get('web_pages_indexed', 0)} pages | PDFs: {st.session_state.get('pdf_pages_indexed', 0)} pages"
+)
+
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
