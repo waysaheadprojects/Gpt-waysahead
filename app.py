@@ -24,8 +24,8 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 # === Load env ===
 load_dotenv()
 st.set_page_config(page_title="Retail Research Assistant — Deep Research Option", page_icon="🧠")
-st.set_page_config(page_title="Retail Research Assistant — Deep Research Verbose", page_icon="🧠")
 
+# === Hide Sidebar ===
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -193,27 +193,32 @@ Context: {context}"""),
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(get_llm(), prompt))
 
-# 🔍 Verbose GPT-Researcher that streams logs to UI
 async def run_gpt_researcher_async(topic: str):
     placeholder = st.empty()
     logs = []
+    chart_data = []
 
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
         logs.append(line)
         placeholder.text("\n".join(logs[-20:]))
 
+        # Example: add dummy metric for chart
+        if "Insight:" in line:
+            chart_data.append(random.randint(1, 10))
+
     researcher = GPTResearcher(
         query=topic,
         report_source="hybrid",
         verbosity="high"
     )
-
-    # Monkey patch its print for log capture
     researcher.print = capture_log
 
     await researcher.conduct_research()
     report = await researcher.write_report()
+
+    if chart_data:
+        st.line_chart(chart_data)
 
     return report
 
@@ -238,7 +243,6 @@ def get_answer(user_input):
         return "❌ Sorry, I couldn’t find that in the documents I have. If you’d like, run a deep research report below."
 
 # === UI ===
-st.title("🧠 Hybrid Retail Research Assistant — FAISS + Manual Deep Research")
 st.title("🧠 Hybrid Retail Research Assistant — FAISS + GPT-Researcher Live Logs")
 st.session_state.vector_store = get_or_create_vectorstore()
 
@@ -264,7 +268,6 @@ if q:
 
     if "Sorry" in a:
         if st.button("🔍 Run Deep Research Now"):
-        if st.button("🔍 Run Deep Research Now (See Live Logs)"):
             with st.spinner("🧠 Running deep research..."):
                 report = asyncio.run(run_gpt_researcher_async(q))
                 st.download_button("📄 Download Deep Research Report", report, file_name="report.md")
