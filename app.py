@@ -31,7 +31,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.9)  
+    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
 
 @st.cache_resource
 def get_embeddings():
@@ -73,14 +73,14 @@ def get_duckduckgo_fact():
 
 # === Static fallback ===
 WELCOME_FACTS = [
-    "Mall of the Emirates attracts 42 million visitors every year.",
+    "Mall of the Emirates attracts over 42 million visitors every year.",
     "BFL Group runs over 74 stores across the Middle East & Europe.",
     "Omnichannel retail is growing by 14% every year.",
     "78% of shoppers prefer sustainable brands.",
     "Brands For Less recently expanded its online footprint in India."
 ]
 
-# === Vector store + LLM tiny summarizer ===
+# === Vector store LLM summarizer ===
 def get_fact_from_vectorstore(vs):
     try:
         retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 6})
@@ -89,7 +89,7 @@ def get_fact_from_vectorstore(vs):
         if not chunks:
             return None
         combined = " ".join(chunks[:3])
-        prompt = f"Extract one clear, recent fact about BFL Group or Mall of the Emirates from this text. Keep it under 25 words. Text: {combined[:1000]}"
+        prompt = f"Extract one clear, recent fact about Retail. Keep it under 25 words. Text: {combined[:1000]}"
         response = get_llm().invoke(prompt)
         clean_fact = response.strip().replace("\n", " ")
         if clean_fact:
@@ -164,18 +164,26 @@ def get_or_create_vectorstore():
         chunks = splitter.split_documents(docs)
         vs = Chroma.from_documents(chunks, get_embeddings(), persist_directory=path)
         vs.persist()
-    st.success(f"✅ Indexed {len(all_urls)} pages.")
+
+    st.session_state.web_pages_indexed = len(all_urls)
+    st.session_state.pdf_pages_indexed = 0  # start with zero PDFs
+
+    st.success(f"✅ Indexed {len(all_urls)} website pages.")
     return vs
 
 def add_pdfs_to_vectorstore(uploaded_files, vs):
     os.makedirs("./uploads", exist_ok=True)
     docs = []
+    pdf_page_count = 0
+
     for file in uploaded_files:
         save_path = f"./uploads/{file.name}"
         with open(save_path, "wb") as f:
             f.write(file.getbuffer())
         loader = PyPDFLoader(save_path)
-        for doc in loader.load():
+        loaded_docs = loader.load()
+        pdf_page_count += len(loaded_docs)  # Count pages
+        for doc in loaded_docs:
             lines = doc.page_content.splitlines()
             heading = None
             for line in lines:
@@ -186,6 +194,7 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
                 doc.metadata["heading"] = heading
             doc.metadata["source_pdf"] = file.name
             docs.append(doc)
+
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=300,
         chunk_overlap=50
@@ -193,33 +202,32 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
     chunks = splitter.split_documents(docs)
     vs.add_documents(chunks)
     vs.persist()
+
+    st.session_state.pdf_pages_indexed = st.session_state.get("pdf_pages_indexed", 0) + pdf_page_count
+
+    st.success(f"✅ Added {len(uploaded_files)} PDF(s) with {pdf_page_count} pages! Reload page to use them.")
     return vs
 
 def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
-# === Best retriever with keyword fallback ===
 def get_best_relevant_chunks(query, vs):
     retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
     docs = retriever.get_relevant_documents(query)
     if not docs:
-        # fallback: direct keyword match
         all_docs = vs.get()["documents"]
         keyword_hits = [d for d in all_docs if query.lower() in d["page_content"].lower()]
         if keyword_hits:
-            print("Using fallback keyword match.")
+            print("✅ Using fallback keyword match.")
             return keyword_hits
     return docs
 
 def get_retriever_chain(vs):
-    class CustomRetriever:
-        def get_relevant_documents(self, query):
-            return get_best_relevant_chunks(query, vs)
-    retriever = CustomRetriever()
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Generate the best search query to find the right chunk.")
+        ("user", "Generate a precise search query to get the best chunks.")
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
@@ -250,7 +258,11 @@ Context:
     return create_retrieval_chain(retriever_chain, create_stuff_documents_chain(get_llm(), prompt))
 
 def get_answer(user_input):
-    retriever_chain = get_retriever_chain(st.session_state.vector_store)
+    vs = st.session_state.vector_store
+    docs = get_best_relevant_chunks(user_input, vs)
+    if not docs:
+        return "Sorry, I couldn’t find that in the documents I have."
+    retriever_chain = get_retriever_chain(vs)
     rag_chain = get_rag_chain(retriever_chain)
     result = rag_chain.invoke({
         "chat_history": st.session_state.chat_history,
@@ -270,7 +282,9 @@ if not pdfs_already_uploaded():
     )
     if uploaded_files:
         add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
-        st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
+
+# ✅ Show index summary
+st.info(f"📊 Total indexed — Websites: {st.session_state.get('web_pages_indexed', 0)} pages | PDFs: {st.session_state.get('pdf_pages_indexed', 0)} pages")
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
