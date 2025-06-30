@@ -191,10 +191,14 @@ Context: {context}"""),
 def get_answer(user_input):
     vs = st.session_state.vector_store
     docs = get_best_relevant_chunks(user_input, vs)
-    if not docs: return "Sorry, I couldn’t find that in the documents I have."
+    if not docs:
+        return "Sorry, I couldn’t find that in the documents I have."
     chain = get_retriever_chain(vs)
     rag = get_rag_chain(chain)
-    return rag.invoke({"chat_history": st.session_state.chat_history, "input": user_input})["answer"]
+    with st.spinner("🤖 Generating answer..."):
+        result = rag.invoke({"chat_history": st.session_state.chat_history, "input": user_input})
+    return result["answer"]
+
 
 # === UI ===
 st.title("🧠 Retail Chatbot — FAISS Version")
