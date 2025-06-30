@@ -27,7 +27,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
+    return ChatOpenAI(model="gpt-4.1-nano")
 
 @st.cache_resource
 def get_embeddings():
@@ -63,9 +63,10 @@ def crawl_links(start_url, max_pages=10):
     return list(seen)
 
 @st.cache_resource
-def get_base_vectorstore():
-    path = ".chroma_cache/base"
+def get_or_create_vectorstore():
+    path = ".chroma_cache/main"
     os.makedirs(path, exist_ok=True)
+
     if os.path.exists(os.path.join(path, "index")):
         return Chroma(persist_directory=path, embedding_function=get_embeddings())
 
@@ -91,19 +92,7 @@ def get_base_vectorstore():
     st.success(f"✅ Indexed {len(all_urls)} pages.")
     return vs
 
-@st.cache_resource
-def get_pdf_vectorstore():
-    path = ".chroma_cache/pdfs"
-    os.makedirs(path, exist_ok=True)
-
-    # If we already have embedded PDFs, just load them:
-    if os.path.exists(os.path.join(path, "index")):
-        return Chroma(persist_directory=path, embedding_function=get_embeddings())
-
-    # Otherwise, initialize empty store:
-    return Chroma(persist_directory=path, embedding_function=get_embeddings())
-
-def add_pdfs_to_store(uploaded_files, pdf_vs):
+def add_pdfs_to_vectorstore(uploaded_files, vs):
     os.makedirs("./uploads", exist_ok=True)
     docs = []
     for file in uploaded_files:
@@ -115,15 +104,9 @@ def add_pdfs_to_store(uploaded_files, pdf_vs):
             doc.metadata["source_pdf"] = file.name
             docs.append(doc)
     chunks = RecursiveCharacterTextSplitter().split_documents(docs)
-    pdf_vs.add_documents(chunks)
-    pdf_vs.persist()
-    return pdf_vs
-
-def get_merged_vectorstore():
-    base_vs = get_base_vectorstore()
-    pdf_vs = get_pdf_vectorstore()
-    base_vs.merge_from(pdf_vs)
-    return base_vs
+    vs.add_documents(chunks)
+    vs.persist()
+    return vs
 
 def get_retriever_chain(vs):
     retriever = vs.as_retriever()
@@ -161,27 +144,23 @@ def get_answer(user_input):
 # === UI ===
 st.title("🧠 Retail Chatbot — BFL, Mall & Permanent PDFs")
 
-# 1️⃣ Always load merged vector store:
-st.session_state.vector_store = get_merged_vectorstore()
+# Load vector store once:
+st.session_state.vector_store = get_or_create_vectorstore()
 
-# 2️⃣ Allow PDF upload if new:
 uploaded_files = st.file_uploader(
-    "📄 Upload new PDF(s) — these will be saved permanently:",
+    "📄 Upload PDF(s) — saved permanently for everyone:",
     type=["pdf"], accept_multiple_files=True
 )
 
 if uploaded_files:
-    pdf_vs = get_pdf_vectorstore()
-    add_pdfs_to_store(uploaded_files, pdf_vs)
+    add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
     st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
 
-# 3️⃣ Init chat history:
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
         AIMessage(content="Hi 👋! Ask me anything about BFL, Mall, or all uploaded PDFs.")
     ]
 
-# 4️⃣ Handle chat:
 user_input = st.chat_input("Type your question here...")
 if user_input:
     answer = get_answer(user_input)
@@ -190,7 +169,6 @@ if user_input:
         AIMessage(content=answer)
     ])
 
-# 5️⃣ Show chat:
 for msg in st.session_state.chat_history:
     with st.chat_message("AI" if isinstance(msg, AIMessage) else "Human"):
         st.markdown(msg.content)
