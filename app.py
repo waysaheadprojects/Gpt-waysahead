@@ -2,6 +2,7 @@ import os
 import glob
 import random
 import requests
+import feedparser
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
 import streamlit as st
@@ -21,7 +22,6 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 load_dotenv()
 st.set_page_config(page_title="Retail Chatbot", page_icon="🧠")
 
-# === Hide Sidebar ===
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -29,16 +29,14 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# === LLM & Embeddings ===
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature =0.8)
+    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
 
 @st.cache_resource
 def get_embeddings():
     return OpenAIEmbeddings()
 
-# === Sites to crawl ===
 FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/Mall_of_the_Emirates",
     "https://www.malloftheemirates.com/en",
@@ -46,7 +44,18 @@ FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/BFL_Group",
 ]
 
-# === DuckDuckGo live fact ===
+# === 1️⃣ RSS HEADLINE ===
+def get_fact_from_rss():
+    try:
+        feed = feedparser.parse("https://www.retaildive.com/rss/")
+        if feed.entries:
+            headline = feed.entries[0].title
+            return f"📰 Retail Headline: {headline}"
+    except Exception as e:
+        print(f"RSS failed: {e}")
+    return None
+
+# === 2️⃣ DuckDuckGo fallback ===
 def get_duckduckgo_fact():
     try:
         query = "latest retail news"
@@ -57,27 +66,46 @@ def get_duckduckgo_fact():
         links = soup.find_all("a", {"class": "result__a"})
         if links:
             headline = links[0].text.strip()
-            return f"📰 Retail Fact: {headline}"
+            return f"📰 Retail Insight: {headline}"
     except Exception as e:
-        print(f"DDG search failed: {e}")
+        print(f"DDG failed: {e}")
     return None
 
-# === Fallback facts ===
+# === 3️⃣ Static fallback ===
 WELCOME_FACTS = [
-    "Did you know? Mall of the Emirates attracts 42 million visitors a year.",
-    "Fun fact: BFL Group operates 74 stores across the Middle East and Europe.",
-    "Retail trend: Omnichannel retail keeps growing by 14% every year.",
-    "Did you know? 78% of shoppers prefer sustainable brands.",
-    "Retail update: Brands For Less expanded to India with an online store."
+    "Mall of the Emirates attracts 42 million visitors every year.",
+    "BFL Group runs over 74 stores across the Middle East & Europe.",
+    "Omnichannel retail is growing by 14% every year.",
+    "78% of shoppers prefer sustainable brands.",
+    "Brands For Less recently expanded its online footprint in India."
 ]
 
-def get_random_welcome():
+# === 4️⃣ Vector store dynamic ===
+def get_fact_from_vectorstore(vs):
+    try:
+        retriever = vs.as_retriever()
+        docs = retriever.get_relevant_documents("Share one interesting fact about BFL or Mall of the Emirates.")
+        if docs:
+            snippet = docs[0].page_content.strip()
+            if snippet:
+                return f"📌 Retail Fact: {snippet[:180]}..."
+    except Exception as e:
+        print(f"Vectorstore fact failed: {e}")
+    return None
+
+def get_best_welcome_fact(vs):
+    fact = get_fact_from_vectorstore(vs)
+    if fact:
+        return fact
+    fact = get_fact_from_rss()
+    if fact:
+        return fact
     fact = get_duckduckgo_fact()
     if fact:
         return fact
-    return random.choice(WELCOME_FACTS)
+    return f"💡 {random.choice(WELCOME_FACTS)}"
 
-# === Crawl helper ===
+# === Crawling ===
 def crawl_links(start_url, max_pages=10):
     seen = set()
     to_visit = [start_url]
@@ -154,17 +182,19 @@ def get_retriever_chain(vs):
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Generate best search query."),
+        ("user", "Generate a search query to find the best answers.")
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
 def get_rag_chain(retriever_chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """
-You are a retail assistant. Use only the context below.
-If the user asks for lists or tables, use clean Markdown.
-If info is missing, say: 'I couldn’t find that in the available information.'
-
+You are an intuitive, friendly retail knowledge assistant.  
+Use **only the provided context** to answer accurately.  
+Always cite facts exactly as found — no guessing.  
+If the user asks for a list, use clean Markdown tables.  
+If info is missing, reply: "Sorry, I couldn’t find that in the documents I have."  
+Keep your tone conversational and clear.
 Context:
 {context}
 """),
@@ -185,23 +215,20 @@ def get_answer(user_input):
 # === UI ===
 st.title("🧠 Retail Chatbot — BFL, Mall & Permanent PDFs")
 
-# Load vector store:
 st.session_state.vector_store = get_or_create_vectorstore()
 
-# ✅ Show uploader only if no PDFs yet:
 if not pdfs_already_uploaded():
     uploaded_files = st.file_uploader(
-        "📄 Upload PDF(s) — saved permanently for everyone:",
+        "📄 Upload PDF(s) — these will be stored permanently for everyone:",
         type=["pdf"], accept_multiple_files=True
     )
     if uploaded_files:
         add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
         st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
 
-# === Chat with fresh fact ===
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content=get_random_welcome())
+        AIMessage(content=get_best_welcome_fact(st.session_state.vector_store))
     ]
 
 user_input = st.chat_input("Type your question here...")
