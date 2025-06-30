@@ -228,7 +228,7 @@ def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
 def get_best_relevant_chunks(query, vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10))
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10})
     docs = retriever.get_relevant_documents(query)
     if not docs:
         all_docs = vs.get()["documents"]
