@@ -1,5 +1,6 @@
 import os
 import glob
+import random
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -31,7 +32,7 @@ st.markdown("""
 # === LLM & Embeddings ===
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano")
+    return ChatOpenAI(model="gpt-4.1-nano", temperature =0.8)
 
 @st.cache_resource
 def get_embeddings():
@@ -45,6 +46,38 @@ FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/BFL_Group",
 ]
 
+# === DuckDuckGo live fact ===
+def get_duckduckgo_fact():
+    try:
+        query = "latest retail news"
+        url = f"https://duckduckgo.com/html/?q={query}"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=5)
+        soup = BeautifulSoup(r.text, "html.parser")
+        links = soup.find_all("a", {"class": "result__a"})
+        if links:
+            headline = links[0].text.strip()
+            return f"📰 Retail Fact: {headline}"
+    except Exception as e:
+        print(f"DDG search failed: {e}")
+    return None
+
+# === Fallback facts ===
+WELCOME_FACTS = [
+    "Did you know? Mall of the Emirates attracts 42 million visitors a year.",
+    "Fun fact: BFL Group operates 74 stores across the Middle East and Europe.",
+    "Retail trend: Omnichannel retail keeps growing by 14% every year.",
+    "Did you know? 78% of shoppers prefer sustainable brands.",
+    "Retail update: Brands For Less expanded to India with an online store."
+]
+
+def get_random_welcome():
+    fact = get_duckduckgo_fact()
+    if fact:
+        return fact
+    return random.choice(WELCOME_FACTS)
+
+# === Crawl helper ===
 def crawl_links(start_url, max_pages=10):
     seen = set()
     to_visit = [start_url]
@@ -165,10 +198,10 @@ if not pdfs_already_uploaded():
         add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
         st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
 
-# === Chat ===
+# === Chat with fresh fact ===
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
-        AIMessage(content="Hi 👋! Ask me anything about BFL, Mall, or all uploaded PDFs.")
+        AIMessage(content=get_random_welcome())
     ]
 
 user_input = st.chat_input("Type your question here...")
