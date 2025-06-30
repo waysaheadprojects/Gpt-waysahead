@@ -8,6 +8,8 @@ from dotenv import load_dotenv
 import streamlit as st
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
+from io import BytesIO
+from fpdf import FPDF
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -92,7 +94,7 @@ async def run_gpt_researcher(query: str, logs_handler: CustomLogsHandler) -> str
         report_type="research_report",
         report_source="hybrid",
         vector_store=vs,
-        websocket=logs_handler  # << use our handler instead of file
+        websocket=logs_handler
     )
     await researcher.conduct_research()
     return await researcher.write_report()
@@ -222,7 +224,27 @@ async def main():
 
                             last_index += len(new_logs)
 
-                    yield f"\n\n## ✅ Final Report\n\n{result_holder['report']}"
+                    final_report = result_holder['report']
+                    yield f"\n\n## ✅ Final Report\n\n{final_report}"
+
+                    # === Generate PDF ===
+                    pdf = FPDF()
+                    pdf.add_page()
+                    pdf.set_auto_page_break(auto=True, margin=15)
+                    pdf.set_font("Arial", size=12)
+                    for line in final_report.split('\n'):
+                        pdf.multi_cell(0, 10, line)
+
+                    pdf_bytes = BytesIO()
+                    pdf.output(pdf_bytes)
+                    pdf_bytes.seek(0)
+
+                    st.download_button(
+                        label="📄 Download Report as PDF",
+                        data=pdf_bytes,
+                        file_name="research_report.pdf",
+                        mime="application/pdf"
+                    )
 
                 st.write_stream(stream_research)
             else:
