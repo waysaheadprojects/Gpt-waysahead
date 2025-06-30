@@ -27,7 +27,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4o")
+    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
 
 @st.cache_resource
 def get_embeddings():
