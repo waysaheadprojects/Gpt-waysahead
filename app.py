@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-# === PATCH JSON extraction bug for GPTResearcher ===
+# PATCH
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -28,12 +28,10 @@ agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 load_dotenv()
 os.environ["REPORT_SOURCE"] = "local"
 
-# === LLM + Vector ===
 llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.2)
 embeddings = OpenAIEmbeddings()
 vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
 
-# === RAG ===
 def get_retriever_chain():
     retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
     prompt = ChatPromptTemplate.from_messages([
@@ -47,8 +45,8 @@ def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """
 You are a retail research assistant.
-Use ONLY the provided context. If none, say ❌.
-Use markdown, bullet points, tables if helpful.
+Use ONLY the provided context. If none, reply ❌.
+Use markdown, bullet points, or tables if helpful.
 Context: {context}
         """),
         MessagesPlaceholder("chat_history"),
@@ -56,12 +54,8 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-# === TOOLS ===
 async def vector_lookup(query: str) -> str:
-    """
-    Look up the query in the local FAISS vector store.
-    Returns a clear answer or ❌ if nothing relevant found.
-    """
+    """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
     if not docs:
         return "❌ No vector match."
@@ -71,22 +65,16 @@ async def vector_lookup(query: str) -> str:
     return result["answer"]
 
 async def chitchat_tool(query: str) -> str:
-    """
-    Short, warm replies for greetings or meta queries.
-    """
+    """Chitchat reply."""
     prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
 async def run_gpt_researcher(query: str) -> str:
-    """
-    Execute deep hybrid research with GPTResearcher.
-    Logs to research_logs.txt.
-    """
+    """Deep research fallback."""
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
         with open(log_file, "a") as f:
             f.write(" ".join(str(a) for a in args) + "\n")
-
     researcher = GPTResearcher(
         query=query,
         report_type="research_report",
@@ -98,26 +86,20 @@ async def run_gpt_researcher(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# === Wrap as StructuredTool ===
 vector_tool = StructuredTool.from_function(vector_lookup)
 chitchat = StructuredTool.from_function(chitchat_tool)
 deep_tool = StructuredTool.from_function(run_gpt_researcher)
 
-# === LangGraph State ===
 class State(BaseModel):
     query: str
     route: Optional[str] = None
     answer: Optional[str] = None
 
-# === Router & Nodes ===
 async def router(state: State):
-    """
-    Use the LLM to classify the query.
-    Return 'vector' or 'chitchat'.
-    """
     res = await llm.ainvoke(f'''
-Classify: "{state.query}"
-Respond with only one: vector or chitchat.
+Classify this input:
+"{state.query}"
+Return: vector OR chitchat.
 ''')
     return {"route": res.content.strip().lower()}
 
@@ -130,7 +112,6 @@ async def chitchat_node(state: State):
 async def deep_node(state: State):
     return {"answer": await deep_tool.ainvoke({"query": state.query})}
 
-# === Graph ===
 graph = StateGraph(State)
 graph.add_node("router", router)
 graph.add_node("vector", vector_node)
@@ -150,54 +131,56 @@ agent = graph.compile()
 
 # === Streamlit ===
 st.set_page_config(page_title="Retail Hybrid Agent", page_icon="🧠")
-st.title("🧠 Retail Research — Hybrid LangGraph Agent (No Web Search)")
+st.title("🧠 Retail Research — Hybrid LangGraph Agent")
 
 if "messages" not in st.session_state:
     st.session_state.messages = []
 if "last_query" not in st.session_state:
     st.session_state.last_query = ""
 
-# History
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if prompt := st.chat_input("Ask anything..."):
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    st.session_state.last_query = prompt
-    with st.chat_message("user"):
-        st.markdown(prompt)
-    with st.spinner("Thinking..."):
-        result = asyncio.run(agent.ainvoke(State(query=prompt)))
-    answer = result["answer"]
+async def main():
+    if prompt := st.chat_input("Ask anything..."):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        st.session_state.last_query = prompt
+        with st.chat_message("user"):
+            st.markdown(prompt)
 
-    if answer.startswith("❌"):
-        st.session_state.messages.append({
-            "role": "assistant",
-            "content": "I couldn’t find enough locally. Click below to run Deep Research!"
-        })
-    else:
-        st.session_state.messages.append({"role": "assistant", "content": answer})
-    st.rerun()
+        with st.spinner("Thinking..."):
+            result = await agent.ainvoke(State(query=prompt))
+            answer = result["answer"]
 
-# Fallback deep
-if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
-    if st.button("🔍 Run Deep Research Now"):
-        with st.spinner("Running Deep Research..."):
-            report = asyncio.run(deep_tool.ainvoke({"query": st.session_state.last_query}))
-            st.session_state.messages.append({"role": "assistant", "content": report})
-            st.rerun()
+            if answer.startswith("❌"):
+                st.session_state.messages.append({
+                    "role": "assistant",
+                    "content": "I couldn’t find enough locally. Click below for Deep Research!"
+                })
+            else:
+                st.session_state.messages.append({"role": "assistant", "content": answer})
 
-# Manual deep
-st.divider()
-with st.expander("💡 Manual Deep Research"):
-    manual_q = st.text_input("Your topic:")
-    if st.button("Run Manual Research"):
-        if manual_q.strip():
+        st.rerun()
+
+    if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
+        if st.button("🔍 Run Deep Research Now"):
             with st.spinner("Running Deep Research..."):
-                report = asyncio.run(deep_tool.ainvoke({"query": manual_q}))
-                st.session_state.messages.append({"role": "user", "content": f"Manual topic: {manual_q}"})
+                report = await deep_tool.ainvoke({"query": st.session_state.last_query})
                 st.session_state.messages.append({"role": "assistant", "content": report})
                 st.rerun()
-        else:
-            st.warning("Please enter a topic.")
+
+    st.divider()
+    with st.expander("💡 Manual Deep Research"):
+        manual_q = st.text_input("Your topic:")
+        if st.button("Run Manual Research"):
+            if manual_q.strip():
+                with st.spinner("Running Deep Research..."):
+                    report = await deep_tool.ainvoke({"query": manual_q})
+                    st.session_state.messages.append({"role": "user", "content": f"Manual topic: {manual_q}"})
+                    st.session_state.messages.append({"role": "assistant", "content": report})
+                    st.rerun()
+            else:
+                st.warning("Please enter a topic.")
+
+asyncio.run(main())
