@@ -99,7 +99,7 @@ def get_answer(q, vs):
     return result["answer"]
 
 # === Deep Research Hybrid ===
-async def run_gpt_researcher_hybrid(topic, vs):
+
 async def run_gpt_researcher_hybrid(topic, vs):
     log_box = st.empty()
     chart_box = st.empty()
