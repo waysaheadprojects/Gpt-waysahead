@@ -26,7 +26,6 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 load_dotenv()
 st.set_page_config(page_title="Retail Research Assistant", page_icon="🧠")
 
-# === Hide Sidebar ===
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -209,22 +208,18 @@ async def run_gpt_researcher_async(topic: str):
     logs = []
     metrics = []
 
-    df = pd.DataFrame(columns=["Step", "Score"])
-
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
         logs.append(line)
 
-        # Add dummy metric if keyword present
         if "Insight:" in line:
-            score = random.randint(1, 10)
-            metrics.append({"Step": len(metrics)+1, "Score": score})
+            metrics.append({"Step": len(metrics)+1, "Score": random.randint(1, 10)})
 
         log_placeholder.markdown(f"<div id='log-box'>{''.join(logs[-50:])}</div>", unsafe_allow_html=True)
 
         if metrics:
-            chart_df = pd.DataFrame(metrics)
-            chart_placeholder.line_chart(chart_df, x="Step", y="Score")
+            df = pd.DataFrame(metrics)
+            chart_placeholder.line_chart(df, x="Step", y="Score")
 
     researcher = GPTResearcher(
         query=topic,
@@ -256,10 +251,10 @@ def get_answer(user_input):
         return result["answer"]
 
     else:
-        return "❌ Sorry, I couldn’t find that in the documents I have. If you’d like, run a deep research report below."
+        return "❌ Sorry, I couldn’t find that in the documents I have."
 
 # === UI ===
-st.title("🧠 Hybrid Retail Research Assistant — Logs + Charts")
+st.title("🧠 Retail Research Assistant — Chat + Deep Research")
 st.session_state.vector_store = get_or_create_vectorstore()
 
 if not os.path.exists("./faiss_index") or not glob.glob("./uploads/*.pdf"):
@@ -267,7 +262,7 @@ if not os.path.exists("./faiss_index") or not glob.glob("./uploads/*.pdf"):
         "📄 Upload PDF(s) — permanently stored",
         type=["pdf"], accept_multiple_files=True
     )
-    if uploaded_files and len(uploaded_files) > 0:
+    if uploaded_files:
         add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
 
 st.info(
@@ -282,13 +277,20 @@ if q:
     a = get_answer(q)
     st.session_state.chat_history.extend([HumanMessage(content=q), AIMessage(content=a)])
 
-    if "Sorry" in a:
-        if st.button("🔍 Run Deep Research Now"):
-            with st.spinner("🧠 Running deep research..."):
-                report = asyncio.run(run_gpt_researcher_async(q))
-                st.download_button("📄 Download Deep Research Report", report, file_name="report.md")
-                st.write(report)
-
 for msg in st.session_state.chat_history:
     with st.chat_message("AI" if isinstance(msg, AIMessage) else "Human"):
         st.markdown(msg.content)
+
+# === Deep Research Section ===
+st.divider()
+st.header("🔍 Want deeper research?")
+topic = st.text_input("Topic for Deep Research:", value="")
+
+if st.button("🚀 Run Deep Research"):
+    if not topic:
+        st.warning("Please enter a topic first!")
+    else:
+        with st.spinner("🧠 Running deep research..."):
+            report = asyncio.run(run_gpt_researcher_async(topic))
+            st.download_button("📄 Download Deep Research Report", report, file_name="DeepResearchReport.md")
+            st.write(report)
