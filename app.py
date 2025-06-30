@@ -1,6 +1,7 @@
 import os
 import asyncio
 import time
+import nest_asyncio
 from dotenv import load_dotenv
 
 import streamlit as st
@@ -17,6 +18,9 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from langgraph.graph import StateGraph, END
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
+
+# === Allow nested event loops ===
+nest_asyncio.apply()
 
 # === PATCH ===
 original = agent_creator.extract_json_with_regex
@@ -90,6 +94,10 @@ async def run_gpt_researcher(query: str) -> str:
     researcher.print = capture_log
     await researcher.conduct_research()
     return await researcher.write_report()
+
+def run_gpt_researcher_sync(query: str) -> str:
+    """Sync wrapper for GPT Researcher to avoid asyncio.run conflict."""
+    return asyncio.get_event_loop().run_until_complete(run_gpt_researcher(query))
 
 async def deep_tool_fn(query: str) -> str:
     """Run deep GPT researcher report."""
@@ -181,11 +189,24 @@ async def main():
             if manual_q.strip():
                 def stream_research():
                     log_file = "./research_logs.txt"
-                    task = asyncio.run(deep_tool.ainvoke({"query": manual_q}))
+                    report_ready = False
 
-                    # While running, stream log file
+                    # Kick off sync version to keep event loop safe
+                    def run_research():
+                        return run_gpt_researcher_sync(manual_q)
+
+                    # Run research in parallel while streaming logs
+                    import threading
+
+                    result_holder = {"report": ""}
+                    def run_and_store():
+                        result_holder["report"] = run_research()
+
+                    t = threading.Thread(target=run_and_store)
+                    t.start()
+
                     last_content = ""
-                    while True:
+                    while t.is_alive():
                         time.sleep(1)
                         if os.path.exists(log_file):
                             with open(log_file) as f:
@@ -193,9 +214,9 @@ async def main():
                                 if content != last_content:
                                     last_content = content
                                     yield f"```\n{content}\n```"
-                        if not asyncio.iscoroutine(task):
-                            break
-                    yield f"\n\n## ✅ Final Report:\n\n{task}"
+
+                    # Final push
+                    yield f"\n\n## ✅ Final Report:\n\n{result_holder['report']}"
 
                 st.write_stream(stream_research)
             else:
