@@ -124,7 +124,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
     researcher = GPTResearcher(
         query=topic,
         report_type="research_report",
-        report_source="hybrid",
+        report_source="web",
         vector_store=vs,
         doc_path="./uploads"  # ✅ use real uploads dir
     )
