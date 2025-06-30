@@ -31,7 +31,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
+    return ChatOpenAI(model="gpt-4o")  # or your model of choice
 
 @st.cache_resource
 def get_embeddings():
@@ -80,15 +80,20 @@ WELCOME_FACTS = [
     "Brands For Less recently expanded its online footprint in India."
 ]
 
-# === 4️⃣ Vector store dynamic ===
+# === 4️⃣ Vector store + LLM tiny summarizer ===
 def get_fact_from_vectorstore(vs):
     try:
         retriever = vs.as_retriever()
         docs = retriever.get_relevant_documents("Share one interesting fact about BFL or Mall of the Emirates.")
-        if docs:
-            snippet = docs[0].page_content.strip()
-            if snippet:
-                return f"📌 Retail Fact: {snippet[:180]}..."
+        chunks = [d.page_content.strip() for d in docs if len(d.page_content.strip()) > 50]
+        if not chunks:
+            return None
+        combined = " ".join(chunks[:3])
+        prompt = f"Extract one clear, recent fact about BFL Group or Mall of the Emirates from this text. Keep it under 25 words. Text: {combined[:1000]}"
+        response = get_llm().invoke(prompt)
+        clean_fact = response.strip().replace("\n", " ")
+        if clean_fact:
+            return f"📌 Retail Fact: {clean_fact}"
     except Exception as e:
         print(f"Vectorstore fact failed: {e}")
     return None
@@ -105,7 +110,7 @@ def get_best_welcome_fact(vs):
         return fact
     return f"💡 {random.choice(WELCOME_FACTS)}"
 
-# === Crawling ===
+# === Crawl helper ===
 def crawl_links(start_url, max_pages=10):
     seen = set()
     to_visit = [start_url]
@@ -182,19 +187,18 @@ def get_retriever_chain(vs):
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
-        ("user", "Generate a search query to find the best answers.")
+        ("user", "Generate a smart search query to retrieve the best answer.")
     ])
     return create_history_aware_retriever(get_llm(), retriever, prompt)
 
 def get_rag_chain(retriever_chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """
-You are an intuitive, friendly retail knowledge assistant.  
-Use **only the provided context** to answer accurately.  
-Always cite facts exactly as found — no guessing.  
-If the user asks for a list, use clean Markdown tables.  
-If info is missing, reply: "Sorry, I couldn’t find that in the documents I have."  
-Keep your tone conversational and clear.
+You are a smart, conversational retail knowledge assistant.
+Use only the context below to answer with reliable facts.
+Do not invent. If you don’t find info, say: "Sorry, I couldn’t find that in the documents I have."
+Use clear markdown for lists or tables.
+Be warm, concise, and human.
 Context:
 {context}
 """),
