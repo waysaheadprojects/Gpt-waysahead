@@ -67,12 +67,12 @@ async def vector_lookup(query: str) -> str:
     return result["answer"]
 
 async def chitchat_tool(query: str) -> str:
-    """Chitchat reply."""
+    """Quick chit-chat fallback."""
     prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
 async def run_gpt_researcher(query: str) -> str:
-    """Deep research fallback."""
+    """Run the GPT Researcher deep report."""
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
         with open(log_file, "a") as f:
@@ -88,8 +88,9 @@ async def run_gpt_researcher(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# ✅ Correct: wrap deep_tool in a clean async function to ensure no coroutine leaks
+# ✅ Now with docstring to fix ValueError
 async def deep_tool_fn(query: str) -> str:
+    """Run deep GPT researcher report."""
     return await run_gpt_researcher(query)
 
 vector_tool = StructuredTool.from_function(vector_lookup)
