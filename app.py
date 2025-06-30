@@ -126,7 +126,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
         report_type="research_report",
         report_source="hybrid",
         vector_store=vs,
-        doc_path=./uploads  # ✅ use real uploads dir
+        doc_path="./uploads"  # ✅ use real uploads dir
     )
     researcher.print = capture_log
 
