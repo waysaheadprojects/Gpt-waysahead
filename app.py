@@ -23,7 +23,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # === Load env ===
 load_dotenv()
-st.set_page_config(page_title="Retail Research Assistant — Hybrid Tool", page_icon="🧠")
+st.set_page_config(page_title="Retail Research Assistant — Deep Research Option", page_icon="🧠")
 
 st.markdown("""
     <style>
@@ -182,25 +182,25 @@ def get_retriever_chain(vs):
 def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
         ("system", """You are a deep retail researcher.
-Use ONLY the context below — from vector store OR fresh external fallback.
-Never hallucinate.
-Always break down numbers, brands, categories in tables or lists.
-If info missing, say so clearly.
+Use ONLY the context below. Never hallucinate.
+Break down the answer clearly, use tables if needed.
+Explain insights if data supports it.
+If no data, say: "Sorry, I couldn’t find that in the docs I have."
 Context: {context}"""),
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(get_llm(), prompt))
 
-async def get_fresh_context_from_gpt_researcher(topic: str):
+async def run_gpt_researcher_async(topic: str):
     researcher = GPTResearcher(
         query=topic,
         report_source="hybrid",
         verbosity="high"
     )
     await researcher.conduct_research()
-    context = await researcher.write_report()
-    return context
+    report = await researcher.write_report()
+    return report
 
 def get_answer(user_input):
     vs = st.session_state.vector_store
@@ -208,23 +208,22 @@ def get_answer(user_input):
 
     if docs:
         merged_context = "\n\n".join([d.page_content for d in docs])
+        chain = get_retriever_chain(vs)
+        rag = get_rag_chain(chain)
+
+        with st.spinner("🤖 Generating answer from trusted docs..."):
+            result = rag.invoke({
+                "chat_history": st.session_state.chat_history,
+                "input": user_input,
+                "context": merged_context
+            })
+        return result["answer"]
+
     else:
-        with st.spinner("🔍 No match — using GPT Researcher Tool..."):
-            merged_context = asyncio.run(get_fresh_context_from_gpt_researcher(user_input))
-
-    chain = get_retriever_chain(vs)
-    rag = get_rag_chain(chain)
-
-    with st.spinner("🤖 Generating final answer..."):
-        result = rag.invoke({
-            "chat_history": st.session_state.chat_history,
-            "input": user_input,
-            "context": merged_context
-        })
-    return result["answer"]
+        return "❌ Sorry, I couldn’t find that in the documents I have. If you’d like, run a deep research report below."
 
 # === UI ===
-st.title("🧠 Retail Research Assistant — FAISS + GPT Researcher Fallback")
+st.title("🧠 Hybrid Retail Research Assistant — FAISS + Manual Deep Research")
 st.session_state.vector_store = get_or_create_vectorstore()
 
 if not os.path.exists("./faiss_index") or not glob.glob("./uploads/*.pdf"):
@@ -246,6 +245,13 @@ q = st.chat_input("Ask me anything…")
 if q:
     a = get_answer(q)
     st.session_state.chat_history.extend([HumanMessage(content=q), AIMessage(content=a)])
+
+    if "Sorry" in a:
+        if st.button("🔍 Run Deep Research Now"):
+            with st.spinner("🧠 Running deep research..."):
+                report = asyncio.run(run_gpt_researcher_async(q))
+                st.download_button("📄 Download Deep Research Report", report, file_name="report.md")
+                st.write(report)
 
 for msg in st.session_state.chat_history:
     with st.chat_message("AI" if isinstance(msg, AIMessage) else "Human"):
