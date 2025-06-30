@@ -121,13 +121,15 @@ async def run_gpt_researcher_hybrid(topic, vs):
         query=topic,
         report_type="research_report",
         report_source="hybrid",
-        vector_store=vs
+        vector_store=vs,
+        doc_path=None  # ✅✅✅ disables DocumentLoader
     )
     researcher.print = capture_log
 
     await researcher.conduct_research()
     report = await researcher.write_report()
     return report
+
 
 # === UI ===
 vs = get_vectorstore()
