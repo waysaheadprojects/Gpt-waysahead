@@ -31,7 +31,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4o")
+    return ChatOpenAI(model="gpt-4.1-nano" , temperature = 0.9)
 
 @st.cache_resource
 def get_embeddings():
@@ -119,7 +119,7 @@ def get_or_create_vectorstore():
         if "pdf_pages_indexed" not in st.session_state:
             try: st.session_state.pdf_pages_indexed = int(open(".faiss_pdfs.txt").read())
             except: st.session_state.pdf_pages_indexed = 0
-        return FAISS.load_local(path, embeddings)
+        return FAISS.load_local(path, embeddings, allow_dangerous_deserialization=True)
 
     all_urls, docs = [], []
     for url in FIXED_DOMAINS:
