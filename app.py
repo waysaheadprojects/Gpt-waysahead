@@ -153,12 +153,12 @@ if prompt := st.chat_input("Ask me anything..."):
     with st.spinner("Thinking..."):
         route_decision = asyncio.run(llm.ainvoke(route_prompt.format(query=prompt)))
         route = route_decision.content.strip().lower()
-
+    
         if "vector" in route:
             answer = asyncio.run(vector_tool.ainvoke({"query": prompt}))
         else:
             answer = asyncio.run(chitchat_tool.ainvoke({"query": prompt}))
-
+    
     if answer.startswith("❌"):
         st.session_state.messages.append({
             "role": "assistant",
@@ -166,6 +166,7 @@ if prompt := st.chat_input("Ask me anything..."):
         })
     else:
         st.session_state.messages.append({"role": "assistant", "content": answer})
+
 
     st.rerun()
 
