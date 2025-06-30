@@ -124,7 +124,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
     researcher = GPTResearcher(
         query=topic,
         report_type="research_report",
-        report_source="web",
+        report_source="hybrid",
         vector_store=vs
     )
     researcher.print = capture_log
