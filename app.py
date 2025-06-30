@@ -61,7 +61,6 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
-
 async def vector_lookup(query: str) -> str:
     """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
@@ -85,7 +84,6 @@ class CustomLogsHandler:
 
     async def send_json(self, data: Dict[str, Any]) -> None:
         self.logs.append(data)
-
 
 async def run_gpt_researcher(query: str, logs_handler: CustomLogsHandler) -> str:
     """Run the GPT Researcher with custom logs handler."""
@@ -208,10 +206,23 @@ async def main():
                         new_logs = logs_handler.logs[last_index:]
                         if new_logs:
                             for log in new_logs:
-                                yield f"```json\n{log}\n```"
+                                log_type = log.get("content", "").replace("_", " ").title()
+                                output = log.get("output", "")
+                                emoji = "💡"
+                                if "starting" in log_type.lower():
+                                    emoji = "🔍"
+                                elif "planning" in log_type.lower():
+                                    emoji = "🗂️"
+                                elif "agent" in log_type.lower():
+                                    emoji = "🤖"
+                                elif "search" in log_type.lower():
+                                    emoji = "🌐"
+
+                                yield f"{emoji} **{log_type}**\n\n{output}\n\n---"
+
                             last_index += len(new_logs)
 
-                    yield f"\n\n## ✅ Final Report:\n\n{result_holder['report']}"
+                    yield f"\n\n## ✅ Final Report\n\n{result_holder['report']}"
 
                 st.write_stream(stream_research)
             else:
