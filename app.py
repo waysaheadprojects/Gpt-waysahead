@@ -1,4 +1,5 @@
 import os
+import glob
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
@@ -15,9 +16,11 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.chains import create_history_aware_retriever, create_retrieval_chain
 from langchain.chains.combine_documents import create_stuff_documents_chain
 
+# === Load env ===
 load_dotenv()
 st.set_page_config(page_title="Retail Chatbot", page_icon="🧠")
 
+# === Hide Sidebar ===
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
@@ -25,6 +28,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# === LLM & Embeddings ===
 @st.cache_resource
 def get_llm():
     return ChatOpenAI(model="gpt-4.1-nano")
@@ -33,6 +37,7 @@ def get_llm():
 def get_embeddings():
     return OpenAIEmbeddings()
 
+# === Sites to crawl ===
 FIXED_DOMAINS = [
     "https://en.wikipedia.org/wiki/Mall_of_the_Emirates",
     "https://www.malloftheemirates.com/en",
@@ -108,6 +113,9 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
     vs.persist()
     return vs
 
+def pdfs_already_uploaded():
+    return len(glob.glob("./uploads/*.pdf")) > 0
+
 def get_retriever_chain(vs):
     retriever = vs.as_retriever()
     prompt = ChatPromptTemplate.from_messages([
@@ -144,18 +152,20 @@ def get_answer(user_input):
 # === UI ===
 st.title("🧠 Retail Chatbot — BFL, Mall & Permanent PDFs")
 
-# Load vector store once:
+# Load vector store:
 st.session_state.vector_store = get_or_create_vectorstore()
 
-uploaded_files = st.file_uploader(
-    "📄 Upload PDF(s) — saved permanently for everyone:",
-    type=["pdf"], accept_multiple_files=True
-)
+# ✅ Show uploader only if no PDFs yet:
+if not pdfs_already_uploaded():
+    uploaded_files = st.file_uploader(
+        "📄 Upload PDF(s) — saved permanently for everyone:",
+        type=["pdf"], accept_multiple_files=True
+    )
+    if uploaded_files:
+        add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
+        st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
 
-if uploaded_files:
-    add_pdfs_to_vectorstore(uploaded_files, st.session_state.vector_store)
-    st.success(f"✅ Added {len(uploaded_files)} PDF(s)! Reload page to use them.")
-
+# === Chat ===
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
         AIMessage(content="Hi 👋! Ask me anything about BFL, Mall, or all uploaded PDFs.")
