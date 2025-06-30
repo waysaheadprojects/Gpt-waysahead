@@ -61,6 +61,10 @@ Context: {context}
 # === Tool: Vector lookup
 @tool
 async def vector_lookup_tool(query: str) -> str:
+    """
+    Uses the local FAISS vector store to answer a question.
+    Returns a formatted short answer or ❌ if not found.
+    """
     docs = vs.similarity_search(query, k=5)
     if not docs:
         return "❌ No vector answer."
@@ -76,6 +80,10 @@ async def vector_lookup_tool(query: str) -> str:
 # === Tool: Deep Research fallback
 @tool
 async def deep_research_tool(query: str) -> str:
+    """
+    Runs GPTResearcher in hybrid mode to create a detailed report using local + web data.
+    Also logs progress to the server.
+    """
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
