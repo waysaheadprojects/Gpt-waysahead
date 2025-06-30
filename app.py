@@ -1,6 +1,5 @@
 import os
 import asyncio
-import random
 from dotenv import load_dotenv
 
 import streamlit as st
@@ -16,9 +15,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 from gpt_researcher import GPTResearcher
 import gpt_researcher.actions.agent_creator as agent_creator
 
-from langgraph.graph import StateGraph, END
-
-# === Safe regex fix ===
+# === PATCH for JSON bug ===
 original = agent_creator.extract_json_with_regex
 def safe_extract_json_with_regex(response):
     if not response:
@@ -26,14 +23,30 @@ def safe_extract_json_with_regex(response):
     return original(response)
 agent_creator.extract_json_with_regex = safe_extract_json_with_regex
 
+# === Load env ===
 load_dotenv()
 os.environ["REPORT_SOURCE"] = "local"
 
+# === Setup ===
 llm = ChatOpenAI(model="gpt-4.1-nano", temperature=0.3)
 embeddings = OpenAIEmbeddings()
 vs = FAISS.load_local("./faiss_index", embeddings, allow_dangerous_deserialization=True)
 
-# === Retriever chain
+def get_rag_chain(chain):
+    prompt = ChatPromptTemplate.from_messages([
+        ("system",
+         """
+You are a trusted retail & consumer research assistant.
+Use ONLY the given context. If missing, say ❌.
+Never hallucinate.
+Use clear markdown tables, bullet points, short chart ideas if helpful.
+Context: {context}
+         """),
+        MessagesPlaceholder("chat_history"),
+        ("user", "{input}"),
+    ])
+    return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
+
 def get_retriever_chain():
     retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10})
     prompt = ChatPromptTemplate.from_messages([
@@ -43,28 +56,9 @@ def get_retriever_chain():
     ])
     return create_history_aware_retriever(llm, retriever, prompt)
 
-def get_rag_chain(chain):
-    prompt = ChatPromptTemplate.from_messages([
-        ("system",
-         """
-You are a senior research analyst for retail & consumer trends.
-Use ONLY the given context. If none, say: ❌ I have no data for that.
-Use clear markdown tables, bullet points, and short chart suggestions.
-No hallucination.
-Context: {context}
-         """),
-        MessagesPlaceholder("chat_history"),
-        ("user", "{input}"),
-    ])
-    return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
-
-# === Tool: Vector lookup
 @tool
 async def vector_lookup_tool(query: str) -> str:
-    """
-    Uses the local FAISS vector store to answer a question.
-    Returns a formatted short answer or ❌ if not found.
-    """
+    """Answer using vector store. ❌ if no match."""
     docs = vs.similarity_search(query, k=5)
     if not docs:
         return "❌ No vector answer."
@@ -77,13 +71,9 @@ async def vector_lookup_tool(query: str) -> str:
     })
     return result["answer"]
 
-# === Tool: Deep Research fallback
 @tool
 async def deep_research_tool(query: str) -> str:
-    """
-    Runs GPTResearcher in hybrid mode to create a detailed report using local + web data.
-    Also logs progress to the server.
-    """
+    """Run GPTResearcher hybrid + log output."""
     log_file = "./research_logs.txt"
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
@@ -101,35 +91,57 @@ async def deep_research_tool(query: str) -> str:
     await researcher.conduct_research()
     return await researcher.write_report()
 
-# === LangGraph nodes
-async def node_vector(query):
-    return await vector_lookup_tool.ainvoke({"query": query})
+# === Streamlit UI ===
+st.set_page_config(page_title="Retail Research Chatbot", page_icon="🧠")
+st.title("🧠 Retail Research — Hybrid Chatbot")
 
-async def run_deep(query):
-    return await deep_research_tool.ainvoke({"query": query})
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+if "last_query" not in st.session_state:
+    st.session_state.last_query = ""
 
-# === Streamlit app ===
-st.set_page_config(page_title="Retail Hybrid Research", page_icon="🧠")
-st.title("🧠 Retail Research — Hybrid Agent")
+# Display chat history
+for msg in st.session_state.messages:
+    with st.chat_message("user" if msg["role"] == "user" else "assistant"):
+        st.markdown(msg["content"])
 
-query = st.text_input("Ask any question:")
-run_query = st.button("Run Research")
+# New chat input
+if prompt := st.chat_input("Ask me anything..."):
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    st.session_state.last_query = prompt
 
-if "vector_result" not in st.session_state:
-    st.session_state.vector_result = ""
+    with st.chat_message("user"):
+        st.markdown(prompt)
 
-if run_query and query:
     with st.spinner("Checking local knowledge..."):
-        vector_result = asyncio.run(node_vector(query))
-    st.session_state.vector_result = vector_result
+        answer = asyncio.run(vector_lookup_tool(prompt))
 
-    if vector_result.startswith("❌"):
-        st.warning("No clear local match found. This may need deeper web + local research.")
-        if st.button("Run Deep Research Now"):
-            with st.spinner("Running Deep Research..."):
-                deep_result = asyncio.run(run_deep(query))
-                st.session_state.vector_result = deep_result
+    if answer.startswith("❌"):
+        st.session_state.messages.append({"role": "assistant",
+                                          "content": "I couldn’t find this in my local data. Want to run Deep Research instead?"})
+    else:
+        st.session_state.messages.append({"role": "assistant", "content": answer})
 
-if st.session_state.vector_result:
-    st.markdown("### Answer:")
-    st.markdown(st.session_state.vector_result)
+    st.rerun()
+
+# If last message was fallback → offer fallback button
+if st.session_state.messages and "Deep Research" in st.session_state.messages[-1]["content"]:
+    if st.button("🔍 Run Deep Research Now"):
+        with st.spinner("Running Deep Research..."):
+            deep_report = asyncio.run(deep_research_tool(st.session_state.last_query))
+            st.session_state.messages.append({"role": "assistant", "content": deep_report})
+            st.rerun()
+
+# === EXTRA: Manual Deep Research anytime ===
+st.divider()
+st.subheader("💡 Run Manual Deep Research")
+manual_topic = st.text_input("Deep Research topic:")
+if st.button("Run Deep Research Manually"):
+    if manual_topic.strip():
+        with st.spinner("Running Deep Research..."):
+            manual_report = asyncio.run(deep_research_tool(manual_topic))
+            st.session_state.messages.append({"role": "user", "content": f"Run Deep Research for: {manual_topic}"})
+            st.session_state.messages.append({"role": "assistant", "content": manual_report})
+            st.rerun()
+    else:
+        st.warning("Please enter a topic first.")
