@@ -9,6 +9,9 @@ import streamlit as st
 from tqdm import tqdm
 from dotenv import load_dotenv
 
+import asyncio
+from gpt_researcher import GPTResearcher
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_community.document_loaders import WebBaseLoader, PyPDFLoader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -20,7 +23,7 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # === Load env ===
 load_dotenv()
-st.set_page_config(page_title="Retail Chatbot", page_icon="🧠")
+st.set_page_config(page_title="Retail Research Assistant — Hybrid Tool", page_icon="🧠")
 
 st.markdown("""
     <style>
@@ -31,7 +34,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.9)
+    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.7)
 
 @st.cache_resource
 def get_embeddings():
@@ -46,14 +49,21 @@ FIXED_DOMAINS = [
     "https://thedubaimall.com/"
 ]
 
-# === Fallback news ===
+WELCOME_FACTS = [
+    "Mall of the Emirates attracts over 42 million visitors every year.",
+    "BFL Group runs over 74 stores across the Middle East & Europe.",
+    "Omnichannel retail is growing by 14% every year.",
+    "78% of shoppers prefer sustainable brands.",
+    "Brands For Less recently expanded its online footprint in India."
+]
+
 def get_fact_from_rss():
     try:
         feed = feedparser.parse("https://www.retaildive.com/rss/")
         if feed.entries:
-            headline = feed.entries[0].title
-            return f"📰 Retail Headline: {headline}"
-    except: return None
+            return f"📰 Retail Headline: {feed.entries[0].title}"
+    except:
+        return None
 
 def get_duckduckgo_fact():
     try:
@@ -63,24 +73,17 @@ def get_duckduckgo_fact():
         link = soup.find("a", {"class": "result__a"})
         if link:
             return f"📰 Retail Insight: {link.text.strip()}"
-    except: return None
-
-WELCOME_FACTS = [
-    "Mall of the Emirates attracts over 42 million visitors every year.",
-    "BFL Group runs over 74 stores across the Middle East & Europe.",
-    "Omnichannel retail is growing by 14% every year.",
-    "78% of shoppers prefer sustainable brands.",
-    "Brands For Less recently expanded its online footprint in India."
-]
+    except:
+        return None
 
 def get_fact_from_vectorstore(vs):
     try:
         docs = vs.similarity_search(
-            "Share one interesting fact about Retail and share just the fact, it should be intuitive, interesting and engaging", k=5)
+            "Share one interesting fact about retail, BFL Group or malls.", k=5)
         chunks = [d.page_content.strip() for d in docs if len(d.page_content.strip()) > 50]
         if not chunks: return None
         combined = " ".join(chunks[:3])
-        prompt = f"Extract one clear, recent fact about BFL or Mall of the Emirates. Under 25 words. Text: {combined[:1000]}"
+        prompt = f"Extract one short, interesting fact. Under 30 words. Text: {combined[:800]}"
         response = get_llm().invoke(prompt)
         return f"📌 Retail Fact: {response.content.strip()}"
     except: return None
@@ -120,11 +123,11 @@ def get_or_create_vectorstore():
     all_urls, docs = [], []
     for url in FIXED_DOMAINS:
         all_urls.extend(crawl_links(url, max_pages=5))
-    for url in tqdm(all_urls): 
+    for url in tqdm(all_urls):
         try: docs.extend(WebBaseLoader(url).load())
         except: pass
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=500)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
     chunks = splitter.split_documents(docs)
     vs = FAISS.from_documents(chunks, embeddings)
     vs.save_local(path)
@@ -178,45 +181,52 @@ def get_retriever_chain(vs):
 
 def get_rag_chain(chain):
     prompt = ChatPromptTemplate.from_messages([
-        ("system", """You are a warm, engaging, conversational retail knowledge assistant.
-
-Your job is to help the user find clear, reliable facts about BFL Group, Mall of the Emirates, or any uploaded PDF content — but only use the **context provided**.  
-**Do not make up information** — if you don’t have the answer, say:  
-*"Sorry, I couldn’t find that in the documents I have."*
-
-When you share answers:
-- Be concise, clear, and human.
-- Use natural language, like you’re talking to a curious friend.
-- If the user asks for lists or comparisons, format them as clean Markdown tables or bullet points.
-- End your answers with a friendly follow-up question to keep the conversation flowing.  
-  *(For example: “Would you like to know more about this brand’s expansion?”)*
-
-Always aim to keep the user engaged in the conversation.
-
-Context:
-{context}"""),
+        ("system", """You are a deep retail researcher.
+Use ONLY the context below — from vector store OR fresh external fallback.
+Never hallucinate.
+Always break down numbers, brands, categories in tables or lists.
+If info missing, say so clearly.
+Context: {context}"""),
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(get_llm(), prompt))
 
+async def get_fresh_context_from_gpt_researcher(topic: str):
+    researcher = GPTResearcher(
+        query=topic,
+        report_source="hybrid",
+        verbosity="high"
+    )
+    await researcher.conduct_research()
+    context = await researcher.write_report()
+    return context
+
 def get_answer(user_input):
     vs = st.session_state.vector_store
     docs = get_best_relevant_chunks(user_input, vs)
-    if not docs:
-        return "Sorry, I couldn’t find that in the documents I have."
+
+    if docs:
+        merged_context = "\n\n".join([d.page_content for d in docs])
+    else:
+        with st.spinner("🔍 No match — using GPT Researcher Tool..."):
+            merged_context = asyncio.run(get_fresh_context_from_gpt_researcher(user_input))
+
     chain = get_retriever_chain(vs)
     rag = get_rag_chain(chain)
-    with st.spinner("🤖 Generating answer..."):
-        result = rag.invoke({"chat_history": st.session_state.chat_history, "input": user_input})
+
+    with st.spinner("🤖 Generating final answer..."):
+        result = rag.invoke({
+            "chat_history": st.session_state.chat_history,
+            "input": user_input,
+            "context": merged_context
+        })
     return result["answer"]
 
-
 # === UI ===
-st.title("🧠 Retail Chatbot")
+st.title("🧠 Retail Research Assistant — FAISS + GPT Researcher Fallback")
 st.session_state.vector_store = get_or_create_vectorstore()
 
-# ✅ Only show uploader if needed
 if not os.path.exists("./faiss_index") or not glob.glob("./uploads/*.pdf"):
     uploaded_files = st.file_uploader(
         "📄 Upload PDF(s) — permanently stored",
