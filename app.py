@@ -213,7 +213,7 @@ def get_answer(user_input):
 
 
 # === UI ===
-st.title("🧠 Retail Chatbot — FAISS Version")
+st.title("🧠 Retail Chatbot")
 st.session_state.vector_store = get_or_create_vectorstore()
 
 # ✅ Only show uploader if needed
