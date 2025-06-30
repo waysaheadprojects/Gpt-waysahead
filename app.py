@@ -31,7 +31,7 @@ st.markdown("""
 
 @st.cache_resource
 def get_llm():
-    return ChatOpenAI(model="gpt-4.1-nano", temperature = 0.9)
+    return ChatOpenAI(model="gpt-4.1-nano", temperature=0.9)  
 
 @st.cache_resource
 def get_embeddings():
@@ -42,6 +42,8 @@ FIXED_DOMAINS = [
     "https://www.malloftheemirates.com/en",
     "https://www.brandsforless.com/en-in/",
     "https://en.wikipedia.org/wiki/BFL_Group",
+    "https://en.wikipedia.org/wiki/The_Dubai_Mall",
+    "https://thedubaimall.com/"
 ]
 
 # === RSS HEADLINE ===
@@ -98,7 +100,6 @@ def get_fact_from_vectorstore(vs):
         print(f"Vectorstore fact failed: {e}")
     return None
 
-
 def get_best_welcome_fact(vs):
     fact = get_fact_from_vectorstore(vs)
     if fact:
@@ -140,7 +141,6 @@ def get_or_create_vectorstore():
     os.makedirs(path, exist_ok=True)
 
     if os.path.exists(os.path.join(path, "index")):
-        # 🟢 Restore web count from file
         if "web_pages_indexed" not in st.session_state:
             try:
                 with open(".chroma_cache/urls.txt", "r") as f:
@@ -148,8 +148,14 @@ def get_or_create_vectorstore():
                     st.session_state.web_pages_indexed = len(urls)
             except:
                 st.session_state.web_pages_indexed = 0
+
         if "pdf_pages_indexed" not in st.session_state:
-            st.session_state.pdf_pages_indexed = 0
+            try:
+                with open(".chroma_cache/pdf_pages.txt", "r") as f:
+                    st.session_state.pdf_pages_indexed = int(f.read().strip())
+            except:
+                st.session_state.pdf_pages_indexed = 0
+
         return Chroma(persist_directory=path, embedding_function=get_embeddings())
 
     # fresh crawl
@@ -159,33 +165,32 @@ def get_or_create_vectorstore():
             urls = crawl_links(url, max_pages=10)
             all_urls.extend(urls)
 
-        with open(".chroma_cache/urls.txt", "w") as f:
-            f.write("\n".join(all_urls))
+    with open(".chroma_cache/urls.txt", "w") as f:
+        f.write("\n".join(all_urls))
 
-        docs = []
-        for url in tqdm(all_urls, desc="Loading pages"):
-            try:
-                loader = WebBaseLoader(url)
-                for doc in loader.load():
-                    doc.metadata["source_url"] = url
-                    docs.append(doc)
-            except Exception:
-                continue
+    docs = []
+    for url in tqdm(all_urls, desc="Loading pages"):
+        try:
+            loader = WebBaseLoader(url)
+            for doc in loader.load():
+                doc.metadata["source_url"] = url
+                docs.append(doc)
+        except Exception:
+            continue
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=300,
-            chunk_overlap=50
-        )
-        chunks = splitter.split_documents(docs)
-        vs = Chroma.from_documents(chunks, get_embeddings(), persist_directory=path)
-        vs.persist()
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=300,
+        chunk_overlap=50
+    )
+    chunks = splitter.split_documents(docs)
+    vs = Chroma.from_documents(chunks, get_embeddings(), persist_directory=path)
+    vs.persist()
 
     st.session_state.web_pages_indexed = len(all_urls)
     st.session_state.pdf_pages_indexed = 0
 
     st.success(f"✅ Indexed {len(all_urls)} website pages.")
     return vs
-
 
 def add_pdfs_to_vectorstore(uploaded_files, vs):
     os.makedirs("./uploads", exist_ok=True)
@@ -198,7 +203,7 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
             f.write(file.getbuffer())
         loader = PyPDFLoader(save_path)
         loaded_docs = loader.load()
-        pdf_page_count += len(loaded_docs)  # Count pages
+        pdf_page_count += len(loaded_docs)
         for doc in loaded_docs:
             lines = doc.page_content.splitlines()
             heading = None
@@ -220,6 +225,8 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
     vs.persist()
 
     st.session_state.pdf_pages_indexed = st.session_state.get("pdf_pages_indexed", 0) + pdf_page_count
+    with open(".chroma_cache/pdf_pages.txt", "w") as f:
+        f.write(str(st.session_state.pdf_pages_indexed))
 
     st.success(f"✅ Added {len(uploaded_files)} PDF(s) with {pdf_page_count} pages! Reload page to use them.")
     return vs
@@ -228,7 +235,7 @@ def pdfs_already_uploaded():
     return len(glob.glob("./uploads/*.pdf")) > 0
 
 def get_best_relevant_chunks(query, vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 10})
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
     docs = retriever.get_relevant_documents(query)
     if not docs:
         all_docs = vs.get()["documents"]
@@ -307,7 +314,6 @@ if not pdfs_already_uploaded():
 st.info(
     f"📊 Total indexed — Websites: {st.session_state.get('web_pages_indexed', 0)} pages | PDFs: {st.session_state.get('pdf_pages_indexed', 0)} pages"
 )
-
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = [
