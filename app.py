@@ -9,8 +9,10 @@ import streamlit as st
 from pydantic import BaseModel
 from typing import Optional, Dict, Any, List
 from io import BytesIO
-from reportlab.lib.pagesizes import letter
-from reportlab.pdfgen import canvas
+
+from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.pagesizes import LETTER
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.vectorstores import FAISS
@@ -228,19 +230,26 @@ async def main():
                     final_report = result_holder['report']
                     yield f"\n\n## ✅ Final Report\n\n{final_report}"
 
-                    # === Unicode-safe PDF with reportlab ===
+                    # === Nicely formatted PDF with Platypus ===
                     pdf_buffer = BytesIO()
-                    c = canvas.Canvas(pdf_buffer, pagesize=letter)
-                    textobject = c.beginText(40, 750)
-                    textobject.setFont("Helvetica", 12)
+                    doc = SimpleDocTemplate(pdf_buffer, pagesize=LETTER)
+                    styles = getSampleStyleSheet()
+                    story = []
 
                     for line in final_report.split("\n"):
-                        textobject.textLine(line)
+                        if line.strip().startswith("# "):
+                            story.append(Paragraph(f"<b>{line.strip('# ').strip()}</b>", styles["Heading1"]))
+                        elif line.strip().startswith("## "):
+                            story.append(Paragraph(f"<b>{line.strip('# ').strip()}</b>", styles["Heading2"]))
+                        elif line.strip().startswith("### "):
+                            story.append(Paragraph(f"<b>{line.strip('# ').strip()}</b>", styles["Heading3"]))
+                        elif line.strip() == "---":
+                            story.append(Spacer(1, 12))
+                        else:
+                            story.append(Paragraph(line, styles["BodyText"]))
+                        story.append(Spacer(1, 6))
 
-                    c.drawText(textobject)
-                    c.showPage()
-                    c.save()
-
+                    doc.build(story)
                     pdf_buffer.seek(0)
 
                     st.download_button(
