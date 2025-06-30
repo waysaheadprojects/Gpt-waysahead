@@ -100,6 +100,7 @@ def get_answer(q, vs):
 
 # === Deep Research Hybrid ===
 async def run_gpt_researcher_hybrid(topic, vs):
+async def run_gpt_researcher_hybrid(topic, vs):
     log_box = st.empty()
     chart_box = st.empty()
     logs = []
@@ -122,13 +123,12 @@ async def run_gpt_researcher_hybrid(topic, vs):
         report_type="research_report",
         report_source="hybrid",
         vector_store=vs,
-        doc_path=None  # ✅✅✅ disables DocumentLoader
+        doc_path="./uploads"  # ✅ Use your existing uploads folder!
     )
     researcher.print = capture_log
 
     await researcher.conduct_research()
-    report = await researcher.write_report()
-    return report
+    return await researcher.write_report()
 
 
 # === UI ===
