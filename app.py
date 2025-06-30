@@ -10,6 +10,7 @@ from tqdm import tqdm
 from dotenv import load_dotenv
 
 import asyncio
+import pandas as pd
 from gpt_researcher import GPTResearcher
 
 from langchain_core.messages import AIMessage, HumanMessage
@@ -23,13 +24,22 @@ from langchain.chains.combine_documents import create_stuff_documents_chain
 
 # === Load env ===
 load_dotenv()
-st.set_page_config(page_title="Retail Research Assistant — Deep Research Option", page_icon="🧠")
+st.set_page_config(page_title="Retail Research Assistant", page_icon="🧠")
 
 # === Hide Sidebar ===
 st.markdown("""
     <style>
         [data-testid="stSidebar"] { display: none !important; }
         .block-container { padding-top: 2rem; }
+        #log-box {
+            height: 300px;
+            overflow-y: scroll;
+            background: #f9f9f9;
+            border: 1px solid #ddd;
+            padding: 1rem;
+            font-size: 0.85rem;
+            white-space: pre-wrap;
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -194,18 +204,27 @@ Context: {context}"""),
     return create_retrieval_chain(chain, create_stuff_documents_chain(get_llm(), prompt))
 
 async def run_gpt_researcher_async(topic: str):
-    placeholder = st.empty()
+    log_placeholder = st.empty()
+    chart_placeholder = st.empty()
     logs = []
-    chart_data = []
+    metrics = []
+
+    df = pd.DataFrame(columns=["Step", "Score"])
 
     def capture_log(*args, **kwargs):
         line = " ".join(str(a) for a in args)
         logs.append(line)
-        placeholder.text("\n".join(logs[-20:]))
 
-        # Example: add dummy metric for chart
+        # Add dummy metric if keyword present
         if "Insight:" in line:
-            chart_data.append(random.randint(1, 10))
+            score = random.randint(1, 10)
+            metrics.append({"Step": len(metrics)+1, "Score": score})
+
+        log_placeholder.markdown(f"<div id='log-box'>{''.join(logs[-50:])}</div>", unsafe_allow_html=True)
+
+        if metrics:
+            chart_df = pd.DataFrame(metrics)
+            chart_placeholder.line_chart(chart_df, x="Step", y="Score")
 
     researcher = GPTResearcher(
         query=topic,
@@ -216,9 +235,6 @@ async def run_gpt_researcher_async(topic: str):
 
     await researcher.conduct_research()
     report = await researcher.write_report()
-
-    if chart_data:
-        st.line_chart(chart_data)
 
     return report
 
@@ -243,7 +259,7 @@ def get_answer(user_input):
         return "❌ Sorry, I couldn’t find that in the documents I have. If you’d like, run a deep research report below."
 
 # === UI ===
-st.title("🧠 Hybrid Retail Research Assistant — FAISS + GPT-Researcher Live Logs")
+st.title("🧠 Hybrid Retail Research Assistant — Logs + Charts")
 st.session_state.vector_store = get_or_create_vectorstore()
 
 if not os.path.exists("./faiss_index") or not glob.glob("./uploads/*.pdf"):
