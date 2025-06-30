@@ -89,14 +89,15 @@ def get_fact_from_vectorstore(vs):
         if not chunks:
             return None
         combined = " ".join(chunks[:3])
-        prompt = f"Extract one clear, recent fact about Retail. Keep it under 25 words. Text: {combined[:1000]}"
+        prompt = f"Extract one clear, recent fact about BFL Group or Mall of the Emirates from this text. Keep it under 25 words. Text: {combined[:1000]}"
         response = get_llm().invoke(prompt)
-        clean_fact = response.strip().replace("\n", " ")
+        clean_fact = response.content.strip().replace("\n", " ")
         if clean_fact:
             return f"📌 Retail Fact: {clean_fact}"
     except Exception as e:
         print(f"Vectorstore fact failed: {e}")
     return None
+
 
 def get_best_welcome_fact(vs):
     fact = get_fact_from_vectorstore(vs)
