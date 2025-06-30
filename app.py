@@ -154,7 +154,7 @@ def add_pdfs_to_vectorstore(uploaded_files, vs):
             doc.metadata["source_pdf"] = file.name
             pdf_docs.append(doc)
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=300, chunk_overlap=50)
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=500)
     chunks = splitter.split_documents(pdf_docs)
     vs.add_documents(chunks)
     vs.save_local("./faiss_index")
@@ -172,7 +172,7 @@ def get_best_relevant_chunks(query, vs):
     return docs
 
 def get_retriever_chain(vs):
-    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 8})
+    retriever = vs.as_retriever(search_type="similarity", search_kwargs={"k": 200})
     prompt = ChatPromptTemplate.from_messages([
         MessagesPlaceholder("chat_history"),
         ("user", "{input}"),
