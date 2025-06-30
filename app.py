@@ -125,7 +125,7 @@ async def run_gpt_researcher_hybrid(topic, vs):
         query=query,
         report_type="research_report",
         report_source="langchain_vectorstore",
-        vector_store=vector_store,
+        vector_store=vs,
     )
     researcher.print = capture_log
 
