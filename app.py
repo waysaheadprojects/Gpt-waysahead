@@ -54,6 +54,7 @@ Context: {context}
     ])
     return create_retrieval_chain(chain, create_stuff_documents_chain(llm, prompt))
 
+# ✅ FIX: Properly await the chain here!
 async def vector_lookup(query: str) -> str:
     """Local vector store search."""
     docs = vs.similarity_search(query, k=5)
@@ -64,11 +65,13 @@ async def vector_lookup(query: str) -> str:
     result = await chain.ainvoke({"chat_history": [], "input": query, "context": context})
     return result["answer"]
 
+# ✅ Already correct — ensures LLM call is awaited
 async def chitchat_tool(query: str) -> str:
     """Chitchat reply."""
     prompt = f'User said: "{query}". Reply nicely in 1–2 short lines.'
     return (await llm.ainvoke(prompt)).content.strip()
 
+# ✅ Ensure full await for researcher output
 async def run_gpt_researcher(query: str) -> str:
     """Deep research fallback."""
     log_file = "./research_logs.txt"
@@ -151,7 +154,11 @@ async def main():
 
         with st.spinner("Thinking..."):
             result = await agent.ainvoke(State(query=prompt))
+
+            # ✅ SAFELY get the answer
             answer = result["answer"]
+            if asyncio.iscoroutine(answer):
+                answer = await answer
 
             if answer.startswith("❌"):
                 st.session_state.messages.append({
